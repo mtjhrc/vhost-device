@@ -1011,6 +1011,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "vhost-device-gpu"
+version = "0.1.0"
+dependencies = [
+ "assert_matches",
+ "clap",
+ "env_logger",
+ "libc",
+ "log",
+ "thiserror",
+ "vhost",
+ "vhost-user-backend",
+ "virtio-bindings",
+ "virtio-queue",
+ "vm-memory",
+ "vmm-sys-util",
+]
+
+[[package]]
 name = "vhost-device-sound"
 version = "0.1.0"
 dependencies = [
