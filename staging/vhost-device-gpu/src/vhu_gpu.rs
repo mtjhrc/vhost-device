@@ -18,15 +18,15 @@ use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
 use virtio_queue::{DescriptorChain, QueueOwnedT};
-use vm_memory::{ByteValued, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap, Le32};
+use vm_memory::{Bytes, ByteValued, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap, Le32};
 use vmm_sys_util::epoll::EventSet;
 use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
 
 use crate::{
     GpuConfig,
     virtio_gpu::*,
+    virtio_gpu::GpuCommandType,
 };
-
 
 type Result<T> = std::result::Result<T, Error>;
 
@@ -38,10 +38,24 @@ pub(crate) enum Error {
     HandleEventUnknown,
     #[error("Descriptor not found")]
     DescriptorNotFound,
+    #[error("Descriptor read failed")]
+    DescriptorReadFailed,
+    #[error("Descriptor write failed")]
+    DescriptorWriteFailed,
+    #[error("Invalid command type {0}")]
+    InvalidCommandType(u32),
     #[error("Failed to send notification")]
     NotificationFailed,
     #[error("Failed to create new EventFd")]
     EventFdFailed,
+    #[error("Received unexpected write only descriptor at index {0}")]
+    UnexpectedWriteOnlyDescriptor(usize),
+    #[error("Received unexpected readable descriptor at index {0}")]
+    UnexpectedReadableDescriptor(usize),
+    #[error("Invalid descriptor count {0}")]
+    UnexpectedDescriptorCount(usize),
+    #[error("Invalid descriptor size, expected: {0}, found: {1}")]
+    UnexpectedDescriptorSize(usize, u32),
 }
 
 impl convert::From<Error> for io::Error {
@@ -49,7 +63,6 @@ impl convert::From<Error> for io::Error {
         io::Error::new(io::ErrorKind::Other, e)
     }
 }
-
 pub(crate) struct VhostUserGpuBackend {
     virtio_cfg: VirtioGpuConfig,
     event_idx: bool,
@@ -92,6 +105,9 @@ impl VhostUserGpuBackend {
         // buffers, is defined in the Virtio specification for each protocol.
         for desc_chain in requests.clone() {
             let descriptors: Vec<_> = desc_chain.clone().collect();
+            if descriptors.len() < 2 {
+                return Err(Error::UnexpectedDescriptorCount(descriptors.len()).into());
+            }
 
             info!(
                 "Request contains {} descriptors",
@@ -111,14 +127,195 @@ impl VhostUserGpuBackend {
                 // more writable descriptors at the end for the device to use to reply.
                 info!("Length of the {} descriptor@{} is: {}", perm, i, desc.len());
             }
+
+            // Request Header descriptor
+            let desc_request = descriptors[0];
+            if desc_request.is_write_only() {
+                return Err(Error::UnexpectedWriteOnlyDescriptor(0).into());
+            }
+
+            let request = desc_chain
+                .memory()
+                .read_obj::<VirtioGpuCtrlHdr>(desc_request.addr())
+                .map_err(|_| Error::DescriptorReadFailed)?;
+
+            // Keep track of bytes that will be written in the VQ.
+            let mut used_len = 0;
+
+            // Response Header descriptor.
+            let desc_response = descriptors[1];
+            if !desc_response.is_write_only() {
+                return Err(Error::UnexpectedReadableDescriptor(1).into());
+            }
+            let gpu_cmd_type = GpuCommandType::try_from(request.gpu_type).map_err(Error::from)?;
+            //let resp = self.process_gpu_command(gpu_cmd_type);
+            match gpu_cmd_type {
+                GpuCommandType::GetDisplayInfo => {
+                    info!(
+                        "GetDisplayInfo contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::ResourceCreate2d => {
+                    info!(
+                        "ResourceCreate2d contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::ResourceUnref => {
+                    info!(
+                        "ResourceUnref contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::SetScanout => {
+                    info!(
+                        "SetScanout contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::SetScanoutBlob => {
+                    info!(
+                        "SetScanoutBlob contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::ResourceFlush => {
+                    info!(
+                        "ResourceFlush contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::TransferToHost2d => {
+                    info!(
+                        "TransferToHost2d contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::ResourceAttachBacking => {
+                    info!(
+                        "ResourceAttachBacking contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::ResourceDetachBacking => {
+                    info!(
+                        "ResourceDetachBacking contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::GetCapsetInfo => {
+                    info!(
+                        "GetCapsetInfo contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::GetCapset => {
+                    info!(
+                        "GetCapset contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::GetEdid => {
+                    info!(
+                        "GetEdid contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::CtxCreate => {
+                    info!(
+                        "CtxCreate contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::CtxDestroy => {
+                    info!(
+                        "CtxDestroy contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::CtxAttachResource => {
+                    info!(
+                        "CtxAttachResource contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::CtxDetachResource => {
+                    info!(
+                        "CtxDetachResource contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::ResourceCreate3d => {
+                    info!(
+                        "ResourceCreate3d contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::TransferToHost3d => {
+                    info!(
+                        "TransferToHost3d contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::TransferFromHost3d => {
+                    info!(
+                        "TransferFromHost3d contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::CmdSubmit3d => {
+                    info!(
+                        "CmdSubmit3d contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::ResourceCreateBlob => {
+                    info!(
+                        "ResourceCreateBlob contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::ResourceMapBlob => {
+                    info!(
+                        "ResourceMapBlob contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::ResourceUnmapBlob => {
+                    info!(
+                        "ResourceUnmapBlob contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::UpdateCursor => {
+                    info!(
+                        "UpdateCursor contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::MoveCursor => {
+                    info!(
+                        "MoveCursor contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+                GpuCommandType::ResourceAssignUuid => {
+                    info!(
+                        "ResourceAssignUuid contains {} descriptors",
+                        descriptors.len(),
+                    );
+                },
+            }
         }
 
         Ok(())
     }
 
     /// Process the requests in the vring and dispatch replies
-    fn process_queue(&mut self, vring: &VringRwLock) -> Result<()> {
+    fn process_control_queue(&mut self, vring: &VringRwLock) -> Result<()> {
         // Collect all pending requests
+        debug!("Processing control queue");
         let requests: Vec<_> = vring
             .get_mut()
             .get_queue_mut()
@@ -128,11 +325,19 @@ impl VhostUserGpuBackend {
 
         if self.process_requests(requests, vring).is_ok() {
             // Send notification once all the requests are processed
+            debug!("Sending processed request notification");
             vring
                 .signal_used_queue()
                 .map_err(|_| Error::NotificationFailed)?;
+            debug!("Notification sent");
         }
 
+        debug!("Processing control queue finished");
+        Ok(())
+    }
+
+    fn process_cursor_queue(&self, _vring: &VringRwLock) -> IoResult<()> {
+        //debug!("process_cusor_q");
         Ok(())
     }
 }
@@ -193,8 +398,10 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
         }
 
         match device_event {
-            0 => {
-                let vring = &vrings[0];
+            CONTROL_QUEUE => {
+                let vring = &vrings
+                    .get(device_event as usize)
+                    .ok_or_else(|| Error::HandleEventUnknown)?;
 
                 if self.event_idx {
                     // vm-virtio's Queue implementation only checks avail_index
@@ -203,14 +410,37 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
                     // requests on the queue.
                     loop {
                         vring.disable_notification().unwrap();
-                        self.process_queue(vring)?;
+                        self.process_control_queue(vring)?;
                         if !vring.enable_notification().unwrap() {
                             break;
                         }
                     }
                 } else {
                     // Without EVENT_IDX, a single call is enough.
-                    self.process_queue(vring)?;
+                    self.process_control_queue(vring)?;
+                }
+            }
+
+            CURSOR_QUEUE => {
+                let vring = &vrings
+                    .get(device_event as usize)
+                    .ok_or_else(|| Error::HandleEventUnknown)?;
+
+                if self.event_idx {
+                    // vm-virtio's Queue implementation only checks avail_index
+                    // once, so to properly support EVENT_IDX we need to keep
+                    // calling process_queue() until it stops finding new
+                    // requests on the queue.
+                    loop {
+                        vring.disable_notification().unwrap();
+                        self.process_cursor_queue(vring)?;
+                        if !vring.enable_notification().unwrap() {
+                            break;
+                        }
+                    }
+                } else {
+                    // Without EVENT_IDX, a single call is enough.
+                    self.process_cursor_queue(vring)?;
                 }
             }
 
@@ -421,7 +651,7 @@ mod tests {
         // Single valid descriptor
         let mut buf: Vec<u8> = vec![0; 30];
         let (mut backend, vring) = prepare_desc_chain(&mut buf);
-        backend.process_queue(&vring).unwrap();
+        backend.process_control_queue(&vring).unwrap();
     }
 
     #[test]

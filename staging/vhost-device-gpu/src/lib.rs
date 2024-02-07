@@ -1,5 +1,21 @@
+pub mod virtio_gpu;
+pub mod vhu_gpu;
+
 use std::path::PathBuf;
 
+use virtio_gpu::VirtioGpuCtrlHdr;
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum GPUstate {
+    GpuCmdStateNew,
+    GpuCmdStatePending,
+    GpuCmdStateFinished,
+}
+pub struct VirtioGpuCtrlCommand {
+    pub cmd_hdr: VirtioGpuCtrlHdr,
+    pub state: GPUstate,
+
+}
 #[derive(Debug, Clone)]
 /// This structure is the public API through which an external program
 /// is allowed to configure the backend.
