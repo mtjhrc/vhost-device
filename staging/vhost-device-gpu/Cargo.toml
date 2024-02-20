@@ -18,7 +18,7 @@ clap = { version = "4.4",  features = ["derive"] }
 env_logger = "0.10"
 libc = "0.2"
 log = "0.4"
-rutabaga_gfx = "0.1.2"
+rutabaga_gfx = { path = "rutabaga_gfx", features = ["virgl_renderer", "virgl_renderer_next"]}
 thiserror = "1.0"
 vhost = { version = "0.9", features = ["vhost-user-backend"] }
 vhost-user-backend = "0.11"
@@ -26,6 +26,8 @@ virtio-bindings = "0.2.2"
 virtio-queue = "0.10"
 vm-memory = "0.13.1"
 vmm-sys-util = "0.11"
+zerocopy = "0.6.3"
+zerocopy-derive = "0.6.3"
 
 [dev-dependencies]
 assert_matches = "1.5"

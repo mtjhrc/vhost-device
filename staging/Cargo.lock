@@ -802,8 +802,6 @@ dependencies = [
 [[package]]
 name = "rutabaga_gfx"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "450c21b372f2bc0adafa01a5293a5b8ed2f1b691b373a97a9c60367e75c07b6d"
 dependencies = [
  "anyhow",
  "cfg-if",
@@ -1062,6 +1060,8 @@ dependencies = [
  "virtio-queue",
  "vm-memory",
  "vmm-sys-util",
+ "zerocopy",
+ "zerocopy-derive",
 ]
 
 [[package]]

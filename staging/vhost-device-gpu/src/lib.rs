@@ -1,5 +1,7 @@
 pub mod virtio_gpu;
+pub mod virt_gpu;
 pub mod vhu_gpu;
+pub mod protocol;
 
 use std::path::PathBuf;
 
@@ -43,4 +45,38 @@ impl GpuConfig {
     // pub const fn get_audio_backend(&self) -> BackendType {
     //     self.audio_backend
     // }
+}
+
+/// Interrupt flags (re: interrupt status & acknowledge registers).
+/// See linux/virtio_mmio.h.
+pub const VIRTIO_MMIO_INT_VRING: u32 = 0x01;
+pub const VIRTIO_MMIO_INT_CONFIG: u32 = 0x02;
+
+#[derive(Debug)]
+pub enum GpuError {
+    /// Failed to create event fd.
+    EventFd(std::io::Error),
+    /// Failed to decode incoming command.
+    DecodeCommand(std::io::Error),
+    /// Error creating Reader for Queue.
+    // QueueReader(DescriptorError),
+    /// Error creating Writer for Queue.
+    // QueueWriter(DescriptorError),
+    /// Error writting to the Queue.
+    WriteDescriptor(std::io::Error),
+    /// Error reading Guest Memory,
+    GuestMemory,
+}
+
+//type Result<T> = std::result::Result<T, GpuError>;
+
+
+
+
+#[cfg(target_os = "linux")]
+pub struct Gic {}
+
+#[cfg(target_os = "linux")]
+impl Gic {
+    pub fn set_irq(&mut self, _irq: u32) {}
 }
