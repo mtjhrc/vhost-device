@@ -27,7 +27,7 @@ extern "C" {
  */
 #define RUTABAGA_VERSION_MAJOR 0
 #define RUTABAGA_VERSION_MINOR 1
-#define RUTABAGA_VERSION_PATCH 2
+#define RUTABAGA_VERSION_PATCH 3
 
 /**
  * Rutabaga capsets.
@@ -163,7 +163,7 @@ struct rutabaga_command {
     uint8_t *cmd;
 
     /**
-     * Unstable, don't use until version > 0.1.2
+     * Unstable, don't use until version > 0.1.3
      */
     uint32_t num_in_fences;
     uint64_t *fence_ids;
@@ -229,6 +229,10 @@ struct rutabaga_builder {
 int32_t rutabaga_calculate_capset_mask(const char *capset_names, uint64_t *capset_mask);
 
 /**
+ * Initialize rutabaga.
+ *
+ * All API calls using `ptr` must on the same thread that called `rutabaga_init`.
+ *
  * # Safety
  * - If `(*builder).channels` is not null, the caller must ensure `(*channels).channels` points to
  *   a valid array of `struct rutabaga_channel` of size `(*channels).num_channels`.
@@ -338,6 +342,24 @@ int32_t rutabaga_resource_map_info(struct rutabaga *ptr, uint32_t resource_id, u
 int32_t rutabaga_submit_command(struct rutabaga *ptr, struct rutabaga_command *cmd);
 
 int32_t rutabaga_create_fence(struct rutabaga *ptr, const struct rutabaga_fence *fence);
+
+/**
+ * Write a snapshot to `dir`. The directory is expected to already exist and to be empty.
+ *
+ * # Safety
+ * - `dir` must be a null-terminated C-string.
+ * - Unstable, don't use until version > 0.1.3
+ */
+int32_t rutabaga_snapshot(struct rutabaga *ptr, const char *dir);
+
+/**
+ * Restore from a snapshot at `dir`.
+ *
+ * # Safety
+ * - `dir` must be a null-terminated C-string.
+ * - Unstable, don't use until version > 0.1.3
+ */
+int32_t rutabaga_restore(struct rutabaga *ptr, const char *dir);
 
 #ifdef __cplusplus
 }

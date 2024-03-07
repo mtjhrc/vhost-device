@@ -534,6 +534,7 @@ impl VhostUserGpuBackend {
     }
 
     fn process_cursor_queue(&self, _vring: &VringRwLock) -> IoResult<()> {
+        debug!("Init ok!");
         debug!("process_cusor_q");
         Ok(())
     }

@@ -19,6 +19,7 @@ use std::thread;
 use log::error;
 use zerocopy::AsBytes;
 use zerocopy::FromBytes;
+use zerocopy::FromZeroes;
 
 use crate::cross_domain::cross_domain_protocol::*;
 use crate::cross_domain::sys::channel;
@@ -229,9 +230,9 @@ impl CrossDomainState {
             .backing_iovecs
             .as_mut()
             .ok_or(RutabagaError::InvalidIovec)?;
-
-        // Safe because we've verified the iovecs are attached and owned only by this context.
         let slice =
+            // SAFETY:
+            // Safe because we've verified the iovecs are attached and owned only by this context.
             unsafe { std::slice::from_raw_parts_mut(iovecs[0].base as *mut u8, iovecs[0].len) };
 
         match ring_write {
@@ -333,7 +334,8 @@ impl CrossDomainWorker {
                             .take(num_files);
 
                         for (((identifier, identifier_type), identifier_size), mut file) in iter {
-                            // Safe since the descriptors from receive_msg(..) are owned by us and valid.
+                            // Safe since the descriptors from receive_msg(..) are owned by us and
+                            // valid.
                             descriptor_analysis(&mut file, identifier_type, identifier_size)?;
 
                             *identifier = match *identifier_type {
@@ -653,7 +655,7 @@ impl Drop for CrossDomainContext {
 }
 
 #[repr(C)]
-#[derive(Copy, Clone, Default, AsBytes, FromBytes)]
+#[derive(Copy, Clone, Default, AsBytes, FromZeroes, FromBytes)]
 struct CrossDomainInitLegacy {
     hdr: CrossDomainHeader,
     query_ring_id: u32,
@@ -685,9 +687,10 @@ impl RutabagaContext for CrossDomainContext {
                         return Err(RutabagaError::SpecViolation("blob size mismatch"));
                     }
 
-                    // Strictly speaking, it's against the virtio-gpu spec to allocate memory in the context
-                    // create blob function, which says "the actual allocation is done via
-                    // VIRTIO_GPU_CMD_SUBMIT_3D."  However, atomic resource creation is easiest for the
+                    // Strictly speaking, it's against the virtio-gpu spec to allocate memory in the
+                    // context create blob function, which says "the actual
+                    // allocation is done via VIRTIO_GPU_CMD_SUBMIT_3D."
+                    // However, atomic resource creation is easiest for the
                     // cross-domain use case, so whatever.
                     let hnd = match handle_opt {
                         Some(handle) => handle,
@@ -701,6 +704,9 @@ impl RutabagaContext for CrossDomainContext {
                         strides: reqs.strides,
                         offsets: reqs.offsets,
                         modifier: reqs.modifier,
+                        guest_cpu_mappable: (resource_create_blob.blob_flags
+                            & RUTABAGA_BLOB_FLAG_USE_MAPPABLE)
+                            != 0,
                     };
 
                     Ok(RutabagaResource {

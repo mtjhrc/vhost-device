@@ -4,6 +4,8 @@
 
 use std::convert::TryFrom;
 use std::fs::File;
+use std::os::fd::AsFd;
+use std::os::fd::BorrowedFd;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::io::FromRawFd;
 use std::os::unix::io::IntoRawFd;
@@ -25,6 +27,7 @@ pub type RawDescriptor = RawFd;
 /// `fd`. The cloned fd will have the `FD_CLOEXEC` flag set but will not share any other file
 /// descriptor flags with `fd`.
 fn clone_fd(fd: &dyn AsRawFd) -> Result<RawFd> {
+    // SAFETY:
     // Safe because this doesn't modify any memory and we check the return value.
     let ret = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 0) };
     if ret < 0 {
@@ -36,6 +39,8 @@ fn clone_fd(fd: &dyn AsRawFd) -> Result<RawFd> {
 
 impl Drop for SafeDescriptor {
     fn drop(&mut self) {
+        // SAFETY:
+        // Safe because we own the SafeDescriptor at this point.
         let _ = unsafe { libc::close(self.descriptor) };
     }
 }
@@ -60,6 +65,7 @@ impl SafeDescriptor {
     /// Clones this descriptor, internally creating a new descriptor. The new SafeDescriptor will
     /// share the same underlying count within the kernel.
     pub fn try_clone(&self) -> Result<SafeDescriptor> {
+        // SAFETY:
         // Safe because this doesn't modify any memory and we check the return value.
         let descriptor = unsafe { libc::fcntl(self.descriptor, libc::F_DUPFD_CLOEXEC, 0) };
         if descriptor < 0 {
@@ -72,6 +78,7 @@ impl SafeDescriptor {
 
 impl From<SafeDescriptor> for File {
     fn from(s: SafeDescriptor) -> File {
+        // SAFETY:
         // Safe because we own the SafeDescriptor at this point.
         unsafe { File::from_raw_fd(s.into_raw_descriptor()) }
     }
@@ -82,6 +89,14 @@ impl From<SafeDescriptor> for File {
 impl AsRawFd for Descriptor {
     fn as_raw_fd(&self) -> RawFd {
         self.0
+    }
+}
+
+impl AsFd for SafeDescriptor {
+    fn as_fd(&self) -> BorrowedFd {
+        // SAFETY: the `BorrowedFd` we return lives no longer than this `SafeDescriptor`, so the
+        // descriptor will remain open.
+        unsafe { BorrowedFd::borrow_raw(self.descriptor) }
     }
 }
 
@@ -98,6 +113,9 @@ macro_rules! AsRawDescriptor {
 macro_rules! FromRawDescriptor {
     ($name:ident) => {
         impl FromRawDescriptor for $name {
+            // SAFETY:
+            // It is caller's responsibility to ensure that the descriptor is valid and
+            // stays valid for the lifetime of Self
             unsafe fn from_raw_descriptor(descriptor: RawDescriptor) -> Self {
                 $name::from_raw_fd(descriptor)
             }
