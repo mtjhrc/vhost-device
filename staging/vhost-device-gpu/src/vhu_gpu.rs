@@ -17,6 +17,8 @@ use virtio_bindings::{bindings::virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO
 use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
+use virtio_bindings::virtio_config::VIRTIO_F_ANY_LAYOUT;
+use virtio_bindings::virtio_config::VIRTIO_F_RING_RESET;
 use virtio_queue::{DescriptorChain, QueueOwnedT};
 use vm_memory::{ByteValued, Bytes, GuestAddress, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap, Le32};
 use vmm_sys_util::epoll::EventSet;
@@ -533,11 +535,6 @@ impl VhostUserGpuBackend {
         Ok(())
     }
 
-    fn process_cursor_queue(&self, _vring: &VringRwLock) -> IoResult<()> {
-        debug!("Init ok!");
-        debug!("process_cusor_q");
-        Ok(())
-    }
 }
 
 /// VhostUserBackendMut trait methods
@@ -556,8 +553,8 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
     }
 
     fn features(&self) -> u64 {
-        debug!("Features called");
         1 << VIRTIO_F_VERSION_1
+            | 1 << VIRTIO_F_RING_RESET
             | 1 << VIRTIO_F_NOTIFY_ON_EMPTY
             | 1 << VIRTIO_RING_F_INDIRECT_DESC
             | 1 << VIRTIO_RING_F_EVENT_IDX
@@ -598,7 +595,7 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
         }
 
         match device_event {
-            CONTROL_QUEUE => {
+            CONTROL_QUEUE | CURSOR_QUEUE => {
                 let vring = &vrings
                     .get(device_event as usize)
                     .ok_or_else(|| Error::HandleEventUnknown)?;
@@ -618,29 +615,6 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
                 } else {
                     // Without EVENT_IDX, a single call is enough.
                     self.process_control_queue(vring)?;
-                }
-            }
-
-            CURSOR_QUEUE => {
-                let vring = &vrings
-                    .get(device_event as usize)
-                    .ok_or_else(|| Error::HandleEventUnknown)?;
-
-                if self.event_idx {
-                    // vm-virtio's Queue implementation only checks avail_index
-                    // once, so to properly support EVENT_IDX we need to keep
-                    // calling process_queue() until it stops finding new
-                    // requests on the queue.
-                    loop {
-                        vring.disable_notification().unwrap();
-                        self.process_cursor_queue(vring)?;
-                        if !vring.enable_notification().unwrap() {
-                            break;
-                        }
-                    }
-                } else {
-                    // Without EVENT_IDX, a single call is enough.
-                    self.process_cursor_queue(vring)?;
                 }
             }
 

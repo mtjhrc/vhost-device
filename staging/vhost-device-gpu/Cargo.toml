@@ -2,7 +2,7 @@
 name = "vhost-device-gpu"
 version = "0.1.0"
 authors = ["Dorinda Bassey <dbassey@redhat.com>", "Matias Ezequiel Vara Larsen <mvaralar@redhat.com>"]
-description = "A virtio-sound device using the vhost-user protocol."
+description = "A virtio-gpu device using the vhost-user protocol."
 repository = "https://github.com/rust-vmm/vhost-device"
 readme = "README.md"
 keywords = ["gpu", "vhost", "virt", "backend"]
@@ -20,12 +20,12 @@ libc = "0.2"
 log = "0.4"
 rutabaga_gfx = { path = "rutabaga_gfx", features = ["virgl_renderer"]}
 thiserror = "1.0"
-vhost = { version = "0.9", features = ["vhost-user-backend"] }
-vhost-user-backend = "0.11"
+vhost = { git = "https://github.com/mtjhrc/vhost.git", branch = "gpu-compatibility",  features = ["vhost-user-backend"] }
+vhost-user-backend = {package = "vhost-user-backend", git = "https://github.com/mtjhrc/vhost.git", branch = "gpu-compatibility"}
 virtio-bindings = "0.2.2"
-virtio-queue = "0.10"
-vm-memory = "0.13.1"
-vmm-sys-util = "0.11"
+virtio-queue = "0.11.0"
+vm-memory = "0.14.0"
+vmm-sys-util = "0.12.1"
 zerocopy = "0.6.3"
 zerocopy-derive = "0.6.3"
 
