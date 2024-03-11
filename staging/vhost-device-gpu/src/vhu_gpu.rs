@@ -17,6 +17,8 @@ use virtio_bindings::{bindings::virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO
 use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
+use virtio_bindings::virtio_config::VIRTIO_F_ANY_LAYOUT;
+use virtio_bindings::virtio_config::VIRTIO_F_RING_RESET;
 use virtio_queue::{DescriptorChain, QueueOwnedT};
 use vm_memory::{ByteValued, Bytes, GuestAddress, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap, Le32};
 use vmm_sys_util::epoll::EventSet;
@@ -555,8 +557,8 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
     }
 
     fn features(&self) -> u64 {
-        debug!("Features called");
         1 << VIRTIO_F_VERSION_1
+            | 1 << VIRTIO_F_RING_RESET
             | 1 << VIRTIO_F_NOTIFY_ON_EMPTY
             | 1 << VIRTIO_RING_F_INDIRECT_DESC
             | 1 << VIRTIO_RING_F_EVENT_IDX

@@ -1039,8 +1039,19 @@ checksum = "289adfce099c71f8310f895932ccd978f352ca494ea47496dbe20d4241888b82"
 dependencies = [
  "bitflags 2.4.1",
  "libc",
- "vm-memory",
- "vmm-sys-util",
+ "vm-memory 0.13.1",
+ "vmm-sys-util 0.11.2",
+]
+
+[[package]]
+name = "vhost"
+version = "0.10.0"
+source = "git+https://github.com/mtjhrc/vhost.git?branch=gpu-compatibility#9f0bcacc6fc1f2006805f59631046372bbf0df2d"
+dependencies = [
+ "bitflags 2.4.1",
+ "libc",
+ "vm-memory 0.14.0",
+ "vmm-sys-util 0.12.1",
 ]
 
 [[package]]
@@ -1054,12 +1065,14 @@ dependencies = [
  "log",
  "rutabaga_gfx",
  "thiserror",
- "vhost",
- "vhost-user-backend",
+ "vhost 0.10.0",
+ "vhost-user-backend 0.13.1",
  "virtio-bindings",
- "virtio-queue",
- "vm-memory",
- "vmm-sys-util",
+ "virtio-queue 0.10.0",
+ "virtio-queue 0.11.0",
+ "vm-memory 0.13.1",
+ "vm-memory 0.14.0",
+ "vmm-sys-util 0.12.1",
  "zerocopy",
  "zerocopy-derive",
 ]
@@ -1076,12 +1089,12 @@ dependencies = [
  "rstest",
  "tempfile",
  "thiserror",
- "vhost",
- "vhost-user-backend",
+ "vhost 0.9.0",
+ "vhost-user-backend 0.11.0",
  "virtio-bindings",
- "virtio-queue",
- "vm-memory",
- "vmm-sys-util",
+ "virtio-queue 0.10.0",
+ "vm-memory 0.13.1",
+ "vmm-sys-util 0.11.2",
 ]
 
 [[package]]
@@ -1101,12 +1114,12 @@ dependencies = [
  "tempfile",
  "thiserror",
  "v4l2r",
- "vhost",
- "vhost-user-backend",
+ "vhost 0.9.0",
+ "vhost-user-backend 0.11.0",
  "virtio-bindings",
- "virtio-queue",
- "vm-memory",
- "vmm-sys-util",
+ "virtio-queue 0.10.0",
+ "vm-memory 0.13.1",
+ "vmm-sys-util 0.11.2",
 ]
 
 [[package]]
@@ -1117,11 +1130,25 @@ checksum = "61255322e3ebe93fb77d9f6d99577eca7089bbea4174076c5353a8024a463061"
 dependencies = [
  "libc",
  "log",
- "vhost",
+ "vhost 0.9.0",
  "virtio-bindings",
- "virtio-queue",
- "vm-memory",
- "vmm-sys-util",
+ "virtio-queue 0.10.0",
+ "vm-memory 0.13.1",
+ "vmm-sys-util 0.11.2",
+]
+
+[[package]]
+name = "vhost-user-backend"
+version = "0.13.1"
+source = "git+https://github.com/mtjhrc/vhost.git?branch=gpu-compatibility#9f0bcacc6fc1f2006805f59631046372bbf0df2d"
+dependencies = [
+ "libc",
+ "log",
+ "vhost 0.10.0",
+ "virtio-bindings",
+ "virtio-queue 0.11.0",
+ "vm-memory 0.14.0",
+ "vmm-sys-util 0.12.1",
 ]
 
 [[package]]
@@ -1138,8 +1165,20 @@ checksum = "73a01db2cfb6c4b9bc20608b1336263d16714ea8db05de9fec2a254e076f9385"
 dependencies = [
  "log",
  "virtio-bindings",
- "vm-memory",
- "vmm-sys-util",
+ "vm-memory 0.13.1",
+ "vmm-sys-util 0.11.2",
+]
+
+[[package]]
+name = "virtio-queue"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e3f69a13d6610db9312acbb438b0390362af905d37634a2106be70c0f734986d"
+dependencies = [
+ "log",
+ "virtio-bindings",
+ "vm-memory 0.14.0",
+ "vmm-sys-util 0.12.1",
 ]
 
 [[package]]
@@ -1152,7 +1191,21 @@ dependencies = [
  "bitflags 2.4.1",
  "libc",
  "thiserror",
- "vmm-sys-util",
+ "vmm-sys-util 0.11.2",
+ "winapi",
+]
+
+[[package]]
+name = "vm-memory"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "74ffc42216c32c35f858fa4bfdcd9b61017dfd691e0240268fdc85dbf59e5459"
+dependencies = [
+ "arc-swap",
+ "bitflags 2.4.1",
+ "libc",
+ "thiserror",
+ "vmm-sys-util 0.12.1",
  "winapi",
 ]
 
@@ -1161,6 +1214,16 @@ name = "vmm-sys-util"
 version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "48b7b084231214f7427041e4220d77dfe726897a6d41fddee450696e66ff2a29"
+dependencies = [
+ "bitflags 1.3.2",
+ "libc",
+]
+
+[[package]]
+name = "vmm-sys-util"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1d1435039746e20da4f8d507a72ee1b916f7b4b05af7a91c093d2c6561934ede"
 dependencies = [
  "bitflags 1.3.2",
  "libc",
