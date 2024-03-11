@@ -18,7 +18,7 @@ clap = { version = "4.4",  features = ["derive"] }
 env_logger = "0.10"
 libc = "0.2"
 log = "0.4"
-rutabaga_gfx = { path = "rutabaga_gfx", features = ["virgl_renderer", "virgl_renderer_next"]}
+rutabaga_gfx = { path = "rutabaga_gfx", features = ["virgl_renderer"]}
 thiserror = "1.0"
 vhost = { git = "https://github.com/mtjhrc/vhost.git", branch = "gpu-compatibility",  features = ["vhost-user-backend"] }
 vhost-user-backend = {package = "vhost-user-backend", git = "https://github.com/mtjhrc/vhost.git", branch = "gpu-compatibility"}

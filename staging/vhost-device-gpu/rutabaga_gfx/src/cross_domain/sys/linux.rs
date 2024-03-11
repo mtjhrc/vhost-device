@@ -8,7 +8,6 @@ use std::io::IoSliceMut;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::os::unix::io::AsRawFd;
-use std::os::unix::io::FromRawFd;
 use std::os::unix::prelude::AsFd;
 
 use libc::O_ACCMODE;
@@ -121,7 +120,9 @@ impl CrossDomainState {
                 Some(ControlMessageOwned::ScmRights(fds)) => {
                     fds.into_iter()
                         .map(|fd| {
-                            // Safe since the descriptors from recv_with_fds(..) are owned by us and valid.
+                            // SAFETY:
+                            // Safe since the descriptors from recv_with_fds(..) are owned by us and
+                            // valid.
                             unsafe { File::from_raw_descriptor(fd) }
                         })
                         .collect()
@@ -160,8 +161,8 @@ impl CrossDomainContext {
         )?;
 
         let unix_addr = UnixAddr::new(base_channel)?;
-        connect(socket_fd, &unix_addr)?;
-        let stream = unsafe { File::from_raw_fd(socket_fd) };
+        connect(socket_fd.as_raw_fd(), &unix_addr)?;
+        let stream = socket_fd.into();
         Ok(Some(stream))
     }
 
@@ -211,7 +212,9 @@ impl CrossDomainContext {
                 }
 
                 let (raw_read_pipe, raw_write_pipe) = pipe()?;
+                // SAFETY: Safe because we have created the pipe above and is valid.
                 let read_pipe = unsafe { File::from_raw_descriptor(raw_read_pipe) };
+                // SAFETY: Safe because we have created the pipe above and is valid.
                 let write_pipe = unsafe { File::from_raw_descriptor(raw_write_pipe) };
 
                 *descriptor = write_pipe.as_raw_descriptor();
@@ -222,14 +225,15 @@ impl CrossDomainContext {
 
                 // For Wayland read pipes, the guest guesses which identifier the host will use to
                 // avoid waiting for the host to generate one.  Validate guess here.  This works
-                // because of the way Sommelier copy + paste works.  If the Sommelier sequence of events
-                // changes, it's always possible to wait for the host response.
+                // because of the way Sommelier copy + paste works.  If the Sommelier sequence of
+                // events changes, it's always possible to wait for the host
+                // response.
                 if read_pipe_id != *identifier {
                     return Err(RutabagaError::InvalidCrossDomainItemId);
                 }
 
-                // The write pipe needs to be dropped after the send_msg(..) call is complete, so the read pipe
-                // can receive subsequent hang-up events.
+                // The write pipe needs to be dropped after the send_msg(..) call is complete, so
+                // the read pipe can receive subsequent hang-up events.
                 write_pipe_opt = Some(write_pipe);
                 read_pipe_id_opt = Some(read_pipe_id);
             } else {
@@ -277,7 +281,7 @@ pub fn write_volatile(file: &File, opaque_data: &[u8]) -> RutabagaResult<()> {
 }
 
 pub fn channel() -> RutabagaResult<(Sender, Receiver)> {
-    let sender = unsafe { File::from_raw_fd(eventfd(0, EfdFlags::empty())?) };
+    let sender: File = eventfd(0, EfdFlags::empty())?.into();
     let receiver = sender.try_clone()?;
     Ok((sender, receiver))
 }

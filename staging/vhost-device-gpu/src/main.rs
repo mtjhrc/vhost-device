@@ -91,8 +91,10 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    use std::env;
     use assert_matches::assert_matches;
     use std::path::Path;
+    use rutabaga_gfx::{RUTABAGA_CHANNEL_TYPE_WAYLAND, RutabagaChannel, RutabagaFenceHandler};
 
     use super::*;
 

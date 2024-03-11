@@ -39,7 +39,7 @@ ifeq ($(shell pkg-config --exists $(GFXSTREAM_DEP) && echo 1),1)
     gfxstream_feature :=--features=gfxstream
 endif
 
-RUTABAGA_VERSION := $(RUTABAGA_VERSION_MAJOR).1.2
+RUTABAGA_VERSION := $(RUTABAGA_VERSION_MAJOR).1.3
 
 all: build
 
@@ -58,11 +58,11 @@ endif
 	ln -sf $(LIB_NAME).$(RUTABAGA_VERSION) $(DESTDIR)$(libdir)/$(LIB_NAME)
 
 ifeq ($(UNAME), Linux)
-	install -D -m 0644 $(SRC)/share/rutabaga_gfx_ffi.pc $(DESTDIR)$(libdir)/pkgconfig/rutabaga_gfx_ffi.pc
+	install -D -m 0644 $(OUT)/rutabaga_gfx_ffi.pc $(DESTDIR)$(libdir)/pkgconfig/rutabaga_gfx_ffi.pc
 	install -D -m 0644 $(SRC)/include/rutabaga_gfx_ffi.h $(DESTDIR)$(includedir)/rutabaga_gfx_ffi.h
 endif
 ifeq ($(UNAME), Darwin)
-	install -m 0644 $(SRC)/share/rutabaga_gfx_ffi.pc $(DESTDIR)$(libdir)/pkgconfig/rutabaga_gfx_ffi.pc
+	install -m 0644 $(OUT)/rutabaga_gfx_ffi.pc $(DESTDIR)$(libdir)/pkgconfig/rutabaga_gfx_ffi.pc
 	install -m 0644 $(SRC)/include/rutabaga_gfx_ffi.h $(DESTDIR)$(includedir)/rutabaga_gfx_ffi.h
 endif
 

@@ -14,7 +14,7 @@ use std::path::PathBuf;
 use std::str::Utf8Error;
 use std::sync::Arc;
 
-#[cfg(unix)]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 use nix::Error as NixError;
 use remain::sorted;
 use thiserror::Error;
@@ -44,7 +44,10 @@ pub struct RutabagaIovec {
     pub len: usize,
 }
 
+// SAFETY: trivially safe
 unsafe impl Send for RutabagaIovec {}
+
+// SAFETY: trivially safe
 unsafe impl Sync for RutabagaIovec {}
 
 /// 3D resource creation parameters.  Also used to create 2D resource.  Constants based on Mesa's
@@ -100,6 +103,8 @@ pub struct Resource3DInfo {
     pub strides: [u32; 4],
     pub offsets: [u32; 4],
     pub modifier: u64,
+    /// Whether the buffer can be accessed by the guest CPU.
+    pub guest_cpu_mappable: bool,
 }
 
 /// A unique identifier for a device.
@@ -147,10 +152,15 @@ pub struct RutabagaDebug {
     pub message: *const c_char,
 }
 
+// SAFETY:
 // This is sketchy, since `message` is a C-string and there's no locking + atomics.  However,
 // the current use case is to mirror the C-API.  If the `RutabagaDebugHandler` is used with
 // by Rust code, a different struct should be used.
 unsafe impl Send for RutabagaDebug {}
+// SAFETY:
+// This is sketchy, since `message` is a C-string and there's no locking + atomics.  However,
+// the current use case is to mirror the C-API.  If the `RutabagaDebugHandler` is used with
+// by Rust code, a different struct should be used.
 unsafe impl Sync for RutabagaDebug {}
 
 /// Mapped memory caching flags (see virtio_gpu spec)
@@ -266,7 +276,7 @@ pub enum RutabagaError {
     #[error("The mapping failed with library error: {0}")]
     MappingFailed(i32),
     /// Nix crate error.
-    #[cfg(unix)]
+    #[cfg(any(target_os = "android", target_os = "linux"))]
     #[error("The errno is {0}")]
     NixError(NixError),
     #[error("Nul Error occured {0}")]
@@ -313,7 +323,7 @@ pub enum RutabagaError {
     VkMemoryMapError(MemoryMapError),
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "android", target_os = "linux"))]
 impl From<NixError> for RutabagaError {
     fn from(e: NixError) -> RutabagaError {
         RutabagaError::NixError(e)

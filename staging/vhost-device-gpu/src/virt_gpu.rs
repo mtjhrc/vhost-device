@@ -188,8 +188,10 @@ impl VirtioGpu {
             .set_use_egl(true)
             .set_use_gles(true)
             .set_use_glx(true)
-            .set_use_surfaceless(true)
-            .set_use_drm(true);
+            .set_use_surfaceless(true);
+        // TODO: figure out if we need this:
+        // this was part of libkrun modification and not upstream crossvm rutabaga
+        //.set_use_drm(true);
 
         let fence_state = Arc::new(Mutex::new(Default::default()));
         let fence = Self::create_fence_handler(
