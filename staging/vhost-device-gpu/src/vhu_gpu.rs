@@ -535,10 +535,6 @@ impl VhostUserGpuBackend {
         Ok(())
     }
 
-    fn process_cursor_queue(&self, _vring: &VringRwLock) -> IoResult<()> {
-        debug!("process_cusor_q");
-        Ok(())
-    }
 }
 
 /// VhostUserBackendMut trait methods
@@ -599,7 +595,7 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
         }
 
         match device_event {
-            CONTROL_QUEUE => {
+            CONTROL_QUEUE | CURSOR_QUEUE => {
                 let vring = &vrings
                     .get(device_event as usize)
                     .ok_or_else(|| Error::HandleEventUnknown)?;
@@ -619,29 +615,6 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
                 } else {
                     // Without EVENT_IDX, a single call is enough.
                     self.process_control_queue(vring)?;
-                }
-            }
-
-            CURSOR_QUEUE => {
-                let vring = &vrings
-                    .get(device_event as usize)
-                    .ok_or_else(|| Error::HandleEventUnknown)?;
-
-                if self.event_idx {
-                    // vm-virtio's Queue implementation only checks avail_index
-                    // once, so to properly support EVENT_IDX we need to keep
-                    // calling process_queue() until it stops finding new
-                    // requests on the queue.
-                    loop {
-                        vring.disable_notification().unwrap();
-                        self.process_cursor_queue(vring)?;
-                        if !vring.enable_notification().unwrap() {
-                            break;
-                        }
-                    }
-                } else {
-                    // Without EVENT_IDX, a single call is enough.
-                    self.process_cursor_queue(vring)?;
                 }
             }
 
