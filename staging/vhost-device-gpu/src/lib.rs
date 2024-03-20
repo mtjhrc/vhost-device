@@ -1,8 +1,8 @@
-pub mod virtio_gpu;
-pub mod virt_gpu;
-pub mod vhu_gpu;
 pub mod protocol;
 mod tests;
+pub mod vhu_gpu;
+pub mod virt_gpu;
+pub mod virtio_gpu;
 
 use std::path::PathBuf;
 
@@ -17,7 +17,6 @@ pub enum GPUstate {
 pub struct VirtioGpuCtrlCommand {
     pub cmd_hdr: VirtioGpuCtrlHdr,
     pub state: GPUstate,
-
 }
 #[derive(Debug, Clone)]
 /// This structure is the public API through which an external program
@@ -70,9 +69,6 @@ pub enum GpuError {
 }
 
 //type Result<T> = std::result::Result<T, GpuError>;
-
-
-
 
 #[cfg(target_os = "linux")]
 pub struct Gic {}

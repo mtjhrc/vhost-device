@@ -1,6 +1,8 @@
+use rutabaga_gfx::{
+    RutabagaBuilder, RutabagaChannel, RutabagaFenceHandler, RUTABAGA_CHANNEL_TYPE_WAYLAND,
+};
 use std::env;
 use std::path::PathBuf;
-use rutabaga_gfx::{RUTABAGA_CHANNEL_TYPE_WAYLAND, RutabagaBuilder, RutabagaChannel, RutabagaFenceHandler};
 
 // This is a weird test to have, but it is temporary, this code is copied from VirtioGpu::new
 // but we cannot call that here because we don't have a vring

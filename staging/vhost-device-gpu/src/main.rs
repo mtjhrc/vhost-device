@@ -3,10 +3,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
-pub mod vhu_gpu;
-pub mod virtio_gpu;
 pub mod protocol;
+pub mod vhu_gpu;
 pub mod virt_gpu;
+pub mod virtio_gpu;
 
 use log::{error, info};
 use std::path::PathBuf;
@@ -43,7 +43,6 @@ struct GpuArgs {
     socket_path: PathBuf,
 }
 
-
 impl TryFrom<GpuArgs> for GpuConfig {
     type Error = Error;
 
@@ -55,7 +54,6 @@ impl TryFrom<GpuArgs> for GpuConfig {
 }
 
 fn start_backend(config: GpuConfig) -> Result<()> {
-
     let handle: JoinHandle<Result<()>> = spawn(move || loop {
         info!("Starting backend");
         // There isn't much value in complicating code here to return an error from the threads,
@@ -91,10 +89,10 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use std::env;
     use assert_matches::assert_matches;
+    use rutabaga_gfx::{RutabagaChannel, RutabagaFenceHandler, RUTABAGA_CHANNEL_TYPE_WAYLAND};
+    use std::env;
     use std::path::Path;
-    use rutabaga_gfx::{RUTABAGA_CHANNEL_TYPE_WAYLAND, RutabagaChannel, RutabagaFenceHandler};
 
     use super::*;
 
