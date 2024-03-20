@@ -1083,7 +1083,7 @@ dependencies = [
  "vm-memory 0.13.1",
  "vm-memory 0.14.0",
  "vmm-sys-util 0.12.1",
-  "zerocopy 0.6.6",
+ "zerocopy 0.6.6",
  "zerocopy-derive 0.6.6",
 ]
 
