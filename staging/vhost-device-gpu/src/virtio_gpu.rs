@@ -169,7 +169,7 @@ impl TryFrom<Le32> for GpuCommandType {
             VIRTIO_GPU_CMD_CTX_CREATE => Self::CtxCreate,
             VIRTIO_GPU_CMD_CTX_DESTROY => Self::CtxDestroy,
             VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE => Self::CtxAttachResource,
-            VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE =>Self::CtxDetachResource,
+            VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE => Self::CtxDetachResource,
             VIRTIO_GPU_CMD_RESOURCE_CREATE_3D => Self::ResourceCreate3d,
             VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D => Self::TransferToHost3d,
             VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D => Self::TransferFromHost3d,

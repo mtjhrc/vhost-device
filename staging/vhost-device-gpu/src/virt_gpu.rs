@@ -5,9 +5,9 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+use crate::vhu_gpu::Error;
 use libc::c_void;
 use log::{debug, error};
-use crate::vhu_gpu::Error;
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaChannel,
     RutabagaFence, RutabagaFenceHandler, RutabagaIovec, Transfer3D, RUTABAGA_CHANNEL_TYPE_WAYLAND,
@@ -24,8 +24,8 @@ use super::protocol::{
     GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE,
     VIRTIO_GPU_BLOB_MEM_HOST3D,
 };
-use std::result::Result;
 use crate::protocol::VIRTIO_GPU_FLAG_INFO_RING_IDX;
+use std::result::Result;
 
 fn sglist_to_rutabaga_iovecs(
     vecs: &[(GuestAddress, usize)],
@@ -137,11 +137,14 @@ impl VirtioGpu {
                         completed_desc.desc_index
                     );
 
-                    queue_ctl.add_used(completed_desc.desc_index, completed_desc.len).unwrap();
+                    queue_ctl
+                        .add_used(completed_desc.desc_index, completed_desc.len)
+                        .unwrap();
 
                     queue_ctl
                         .signal_used_queue()
-                        .map_err(|_| Error::NotificationFailed).unwrap();
+                        .map_err(|_| Error::NotificationFailed)
+                        .unwrap();
                     debug!("Notification sent");
                     // interrupt_status.fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
                     // if let Some(intc) = &intc {

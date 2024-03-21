@@ -4,44 +4,46 @@
 //
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
-use log::{debug, info, warn, error};
+use log::{debug, error, info, warn};
 use std::{
     convert,
-    io::{self, Result as IoResult, Read, Write},
+    io::{self, Read, Result as IoResult, Write},
 };
 
 use thiserror::Error as ThisError;
 use vhost::vhost_user::message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures};
 use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
-use virtio_bindings::{bindings::virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_VERSION_1}, virtio_gpu::{VIRTIO_GPU_F_CONTEXT_INIT, VIRTIO_GPU_F_RESOURCE_BLOB}};
 use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
 use virtio_bindings::virtio_config::VIRTIO_F_ANY_LAYOUT;
 use virtio_bindings::virtio_config::VIRTIO_F_RING_RESET;
+use virtio_bindings::{
+    bindings::virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_VERSION_1},
+    virtio_gpu::{VIRTIO_GPU_F_CONTEXT_INIT, VIRTIO_GPU_F_RESOURCE_BLOB},
+};
 use virtio_queue::{DescriptorChain, QueueOwnedT};
-use vm_memory::{ByteValued, Bytes, GuestAddress, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard, GuestMemoryMmap, Le32};
+use vm_memory::{
+    ByteValued, Bytes, GuestAddress, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard,
+    GuestMemoryMmap, Le32,
+};
 use vmm_sys_util::epoll::EventSet;
 use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
 
-use rutabaga_gfx::{
-    ResourceCreate3D, ResourceCreateBlob, RutabagaFence, Transfer3D,
-    RUTABAGA_PIPE_BIND_RENDER_TARGET, RUTABAGA_PIPE_TEXTURE_2D,
-};
-use crate::{
-    GpuConfig,
-    virtio_gpu::*,
-    virtio_gpu::GpuCommandType,
-    //VirtioShmRegion,
-};
 use super::protocol::{
     virtio_gpu_ctrl_hdr, virtio_gpu_mem_entry, GpuCommand, GpuResponse, VirtioGpuResult,
 };
+use super::virt_gpu::{VirtioGpu, VirtioGpuRing, VirtioShmRegion};
 use crate::protocol::{VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX};
-use super::virt_gpu::{
-    VirtioGpu,
-    VirtioGpuRing,
-    VirtioShmRegion,
+use crate::{
+    virtio_gpu::GpuCommandType,
+    //VirtioShmRegion,
+    virtio_gpu::*,
+    GpuConfig,
+};
+use rutabaga_gfx::{
+    ResourceCreate3D, ResourceCreateBlob, RutabagaFence, Transfer3D,
+    RUTABAGA_PIPE_BIND_RENDER_TARGET, RUTABAGA_PIPE_TEXTURE_2D,
 };
 
 type Result<T> = std::result::Result<T, Error>;
@@ -155,7 +157,9 @@ impl VhostUserGpuBackend {
                 let transfer = Transfer3D::new_2d(info.r.x, info.r.y, info.r.width, info.r.height);
                 virtio_gpu.transfer_write(0, resource_id, transfer)
             }
-            GpuCommand::ResourceAttachBacking(info) => {todo!()}
+            GpuCommand::ResourceAttachBacking(info) => {
+                todo!()
+            }
             // GpuCommand::ResourceAttachBacking(info) => {
             //     let available_bytes = reader.available_bytes();
             //     if available_bytes != 0 {
@@ -259,8 +263,12 @@ impl VhostUserGpuBackend {
 
                 virtio_gpu.transfer_read(ctx_id, resource_id, transfer, None)
             }
-            GpuCommand::CmdSubmit3d(info) => {todo!()}
-            GpuCommand::ResourceCreateBlob(info) => {todo!()}
+            GpuCommand::CmdSubmit3d(info) => {
+                todo!()
+            }
+            GpuCommand::ResourceCreateBlob(info) => {
+                todo!()
+            }
             // GpuCommand::CmdSubmit3d(info) => {
             //     if reader.available_bytes() != 0 {
             //         let num_in_fences = info.num_in_fences as usize;
@@ -363,10 +371,7 @@ impl VhostUserGpuBackend {
                 return Err(Error::UnexpectedDescriptorCount(descriptors.len()).into());
             }
 
-            info!(
-                "Request contains {} descriptors",
-                descriptors.len(),
-            );
+            info!("Request contains {} descriptors", descriptors.len(),);
 
             for (i, desc) in descriptors.iter().enumerate() {
                 let perm = if desc.is_write_only() {
@@ -409,7 +414,8 @@ impl VhostUserGpuBackend {
             };
             let mem: GuestMemoryMmap = (*atomic_mem.memory().into_inner()).clone();
 
-            let mut resp: std::result::Result<GpuResponse, GpuResponse> = Err(GpuResponse::ErrUnspec);
+            let mut resp: std::result::Result<GpuResponse, GpuResponse> =
+                Err(GpuResponse::ErrUnspec);
             let mut gpu_cmd: Option<GpuCommand> = None;
             let mut ctrl_hdr: Option<virtio_gpu_ctrl_hdr> = None;
             let mut len = 0;
@@ -477,7 +483,8 @@ impl VhostUserGpuBackend {
                     _ => VirtioGpuRing::ContextSpecific { ctx_id, ring_idx },
                 };
 
-                add_to_queue = virtio_gpu.process_fence(ring, fence_id, desc_chain.head_index(), len);
+                add_to_queue =
+                    virtio_gpu.process_fence(ring, fence_id, desc_chain.head_index(), len);
             }
             if add_to_queue {
                 used_len += desc_hdr.len();
@@ -518,11 +525,12 @@ impl VhostUserGpuBackend {
 
         let mem: GuestMemoryMmap = (*atomic_mem.memory().into_inner()).clone();
 
-        let mut virtio_gpu = VirtioGpu::new(
-            vring,
-        );
+        let mut virtio_gpu = VirtioGpu::new(vring);
 
-        if self.process_requests(requests, &mut virtio_gpu, vring).is_ok() {
+        if self
+            .process_requests(requests, &mut virtio_gpu, vring)
+            .is_ok()
+        {
             // Send notification once all the requests are processed
             debug!("Sending processed request notification");
             vring
@@ -534,7 +542,6 @@ impl VhostUserGpuBackend {
         debug!("Processing control queue finished");
         Ok(())
     }
-
 }
 
 /// VhostUserBackendMut trait methods
@@ -562,7 +569,6 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
             | 1 << VIRTIO_GPU_F_EDID
             | 1 << VIRTIO_GPU_F_RESOURCE_BLOB
             | 1 << VIRTIO_GPU_F_CONTEXT_INIT
-
             | VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits()
     }
 
