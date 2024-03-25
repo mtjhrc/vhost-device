@@ -189,6 +189,16 @@ pub struct virtio_gpu_rect {
 }
 unsafe impl ByteValued for virtio_gpu_rect {}
 
+/* VIRTIO_GPU_CMD_GET_EDID */
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[repr(C)]
+pub struct virtio_gpu_get_edid {
+    pub hdr: virtio_gpu_ctrl_hdr,
+    pub scanout: u32,
+    pub padding: u32,
+}
+unsafe impl ByteValued for virtio_gpu_get_edid {}
+
 /* VIRTIO_GPU_CMD_RESOURCE_UNREF */
 #[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
 #[repr(C)]
@@ -549,6 +559,7 @@ pub const VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM: u32 = 134;
 #[derive(Copy, Clone)]
 pub enum GpuCommand {
     GetDisplayInfo(virtio_gpu_ctrl_hdr),
+    GetEdid(virtio_gpu_get_edid),
     ResourceCreate2d(virtio_gpu_resource_create_2d),
     ResourceUnref(virtio_gpu_resource_unref),
     SetScanout(virtio_gpu_set_scanout),
@@ -612,6 +623,8 @@ impl fmt::Debug for GpuCommand {
         use self::GpuCommand::*;
         match self {
             GetDisplayInfo(_info) => f.debug_struct("GetDisplayInfo").finish(),
+            GetEdid(_info) => f.debug_struct("GetEdid").finish(),
+
             ResourceCreate2d(_info) => f.debug_struct("ResourceCreate2d").finish(),
             ResourceUnref(_info) => f.debug_struct("ResourceUnref").finish(),
             SetScanout(_info) => f.debug_struct("SetScanout").finish(),
@@ -652,6 +665,10 @@ impl GpuCommand {
             .map_err(|_| Error::DescriptorReadFailed)?;
         let cmd = match hdr.type_ {
             VIRTIO_GPU_CMD_GET_DISPLAY_INFO => GetDisplayInfo(
+                cmd.read_obj(addr)
+                    .map_err(|_| Error::DescriptorReadFailed)?,
+            ),
+            VIRTIO_GPU_CMD_GET_EDID => GetEdid(
                 cmd.read_obj(addr)
                     .map_err(|_| Error::DescriptorReadFailed)?,
             ),
