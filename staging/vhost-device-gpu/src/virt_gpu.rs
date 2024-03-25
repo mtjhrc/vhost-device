@@ -15,6 +15,7 @@ use rutabaga_gfx::{
     RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
 };
 //use utils::eventfd::EventFd;
+use vhost::vhost_user::gpu_message::VirtioGpuRespDisplayInfo;
 use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 
@@ -239,6 +240,28 @@ impl VirtioGpu {
 
     pub fn force_ctx_0(&self) {
         self.rutabaga.force_ctx_0()
+    }
+
+    /// Gets the list of supported display resolutions as a slice of `(width, height, enabled)` tuples.
+    pub fn display_info(&self, display_info: VirtioGpuRespDisplayInfo) -> Vec<(u32, u32, bool)> {
+        display_info
+            .pmodes
+            .iter()
+            .map(|display| {
+                (
+                    display.r.width.into(),
+                    display.r.height.into(),
+                    display.enabled == 1,
+                )
+            })
+            .collect::<Vec<_>>()
+    }
+
+    /// Gets the EDID for the specified scanout ID. If that scanout is not enabled, it would return
+    /// the EDID of a default display.
+    pub fn get_edid(&self, scanout_id: u32) -> VirtioGpuResult {
+        debug!("scanout id {:?}", scanout_id);
+        todo!()
     }
 
     /// Creates a 3D resource with the given properties and resource_id.
