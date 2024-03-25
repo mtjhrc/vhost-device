@@ -12,7 +12,9 @@ use std::{
 };
 
 use thiserror::Error as ThisError;
+use vhost::vhost_user::gpu_message::{VhostUserGpuEdidRequest, VirtioGpuRespDisplayInfo};
 use vhost::vhost_user::message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures};
+use vhost::vhost_user::GpuBackend;
 use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
 use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
@@ -88,6 +90,7 @@ impl convert::From<Error> for io::Error {
 pub(crate) struct VhostUserGpuBackend {
     virtio_cfg: VirtioGpuConfig,
     event_idx: bool,
+    gpu_backend: Option<GpuBackend>,
     pub exit_event: EventFd,
     mem: Option<GuestMemoryAtomic<GuestMemoryMmap>>,
     shm_region: Option<VirtioShmRegion>,
@@ -106,6 +109,7 @@ impl VhostUserGpuBackend {
                 num_capsets: 0.into(),
             },
             event_idx: false,
+            gpu_backend: None,
             exit_event: EventFd::new(EFD_NONBLOCK).map_err(|_| Error::EventFdFailed)?,
             mem: None,
             shm_region: None,
@@ -129,7 +133,25 @@ impl VhostUserGpuBackend {
         virtio_gpu.force_ctx_0();
         match cmd {
             GpuCommand::GetDisplayInfo(_) => {
-                panic!("virtio_gpu: GpuCommand::GetDisplayInfo unimplemented");
+                let display_info: VirtioGpuRespDisplayInfo = self
+                    .gpu_backend
+                    .as_mut()
+                    .unwrap()
+                    .get_display_info()
+                    .unwrap();
+                let virtio_display = virtio_gpu.display_info(display_info);
+                debug!("Displays: {:?}", virtio_display);
+                Ok(GpuResponse::OkDisplayInfo(virtio_display))
+            }
+            GpuCommand::GetEdid(info) => {
+                let scanout_id = self
+                    .gpu_backend
+                    .as_mut()
+                    .unwrap()
+                    .get_edid(&info.scanout)
+                    .unwrap();
+                println!("scanout info: {:?}", scanout_id);
+                virtio_gpu.get_edid(info.scanout)
             }
             GpuCommand::ResourceCreate2d(info) => {
                 let resource_id = info.resource_id;
@@ -658,6 +680,9 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
         Ok(())
     }
 
+    fn set_gpu_socket(&mut self, mut backend: GpuBackend) {
+        self.gpu_backend = Some(backend);
+    }
     fn get_config(&self, offset: u32, size: u32) -> Vec<u8> {
         let offset = offset as usize;
         let size = size as usize;

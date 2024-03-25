@@ -1056,7 +1056,7 @@ dependencies = [
 [[package]]
 name = "vhost"
 version = "0.10.0"
-source = "git+https://github.com/mtjhrc/vhost.git?branch=gpu-compatibility#9f0bcacc6fc1f2006805f59631046372bbf0df2d"
+source = "git+https://github.com/mtjhrc/vhost.git#a7a589a521361334d30bb14d692abab896adccb8"
 dependencies = [
  "bitflags 2.4.1",
  "libc",
@@ -1150,7 +1150,7 @@ dependencies = [
 [[package]]
 name = "vhost-user-backend"
 version = "0.13.1"
-source = "git+https://github.com/mtjhrc/vhost.git?branch=gpu-compatibility#9f0bcacc6fc1f2006805f59631046372bbf0df2d"
+source = "git+https://github.com/mtjhrc/vhost.git#a7a589a521361334d30bb14d692abab896adccb8"
 dependencies = [
  "libc",
  "log",
