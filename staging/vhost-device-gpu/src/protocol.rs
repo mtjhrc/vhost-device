@@ -296,6 +296,19 @@ pub struct virtio_gpu_resp_display_info {
 }
 unsafe impl ByteValued for virtio_gpu_resp_display_info {}
 
+const EDID_BLOB_MAX_SIZE: usize = 1024;
+
+#[derive(Debug, Copy, Clone)]
+#[repr(C)]
+pub struct virtio_gpu_resp_edid {
+    pub hdr: virtio_gpu_ctrl_hdr,
+    pub size: u32,
+    pub padding: u32,
+    pub edid: [u8; EDID_BLOB_MAX_SIZE],
+}
+
+unsafe impl ByteValued for virtio_gpu_resp_edid {}
+
 /* data passed in the control vq, 3d related */
 
 #[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
@@ -624,7 +637,6 @@ impl fmt::Debug for GpuCommand {
         match self {
             GetDisplayInfo(_info) => f.debug_struct("GetDisplayInfo").finish(),
             GetEdid(_info) => f.debug_struct("GetEdid").finish(),
-
             ResourceCreate2d(_info) => f.debug_struct("ResourceCreate2d").finish(),
             ResourceUnref(_info) => f.debug_struct("ResourceUnref").finish(),
             SetScanout(_info) => f.debug_struct("SetScanout").finish(),
@@ -786,6 +798,10 @@ pub struct GpuResponsePlaneInfo {
 pub enum GpuResponse {
     OkNoData,
     OkDisplayInfo(Vec<(u32, u32, bool)>),
+    OkEdid {
+        /// The EDID display data blob (as specified by VESA)
+        blob: Box<[u8]>,
+    },
     OkCapsetInfo {
         capset_id: u32,
         version: u32,
@@ -893,6 +909,18 @@ impl GpuResponse {
                     .map_err(|_| Error::DescriptorWriteFailed)?;
                 size_of_val(&disp_info)
             }
+            GpuResponse::OkEdid { ref blob } => {
+                let mut edid_info = virtio_gpu_resp_edid {
+                    hdr,
+                    size: blob.len() as u32,
+                    edid: [0; EDID_BLOB_MAX_SIZE],
+                    padding: Default::default(),
+                };
+                edid_info.edid.copy_from_slice(&blob);
+                resp.write_obj(edid_info, desc_addr)
+                    .map_err(|_| Error::DescriptorWriteFailed)?;
+                size_of_val(&edid_info)
+            }
             GpuResponse::OkCapsetInfo {
                 capset_id,
                 version,
@@ -993,6 +1021,7 @@ impl GpuResponse {
         match self {
             GpuResponse::OkNoData => VIRTIO_GPU_RESP_OK_NODATA,
             GpuResponse::OkDisplayInfo(_) => VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
+            GpuResponse::OkEdid { .. } => VIRTIO_GPU_RESP_OK_EDID,
             GpuResponse::OkCapsetInfo { .. } => VIRTIO_GPU_RESP_OK_CAPSET_INFO,
             GpuResponse::OkCapset(_) => VIRTIO_GPU_RESP_OK_CAPSET,
             GpuResponse::OkResourcePlaneInfo { .. } => VIRTIO_GPU_RESP_OK_RESOURCE_PLANE_INFO,
