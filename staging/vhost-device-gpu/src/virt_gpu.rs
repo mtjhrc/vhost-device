@@ -27,6 +27,7 @@ use super::protocol::{
 };
 use crate::protocol::VIRTIO_GPU_FLAG_INFO_RING_IDX;
 use std::result::Result;
+use vhost::vhost_user::GpuBackend;
 
 fn sglist_to_rutabaga_iovecs(
     vecs: &[(GuestAddress, usize)],
@@ -259,9 +260,15 @@ impl VirtioGpu {
 
     /// Gets the EDID for the specified scanout ID. If that scanout is not enabled, it would return
     /// the EDID of a default display.
-    pub fn get_edid(&self, scanout_id: u32) -> VirtioGpuResult {
-        debug!("scanout id {:?}", scanout_id);
-        todo!()
+    pub fn get_edid(&self, gpu_backend: &mut GpuBackend, scanout_id: u32) -> VirtioGpuResult {
+        let edid = gpu_backend.get_edid(&scanout_id).map_err(|e| {
+            error!("Failed to get edid from frontend: {}", e);
+            ErrUnspec
+        })?;
+
+        Ok(OkEdid {
+            blob: Box::from(&edid.edid[..edid.size as usize]),
+        })
     }
 
     /// Creates a 3D resource with the given properties and resource_id.

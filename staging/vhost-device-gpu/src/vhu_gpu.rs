@@ -4,7 +4,7 @@
 //
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use std::cell::RefCell;
 use std::{
     convert,
@@ -131,6 +131,7 @@ impl VhostUserGpuBackend {
         desc_addr: GuestAddress,
     ) -> VirtioGpuResult {
         virtio_gpu.force_ctx_0();
+        trace!("process_gpu_command: {cmd:?}");
         match cmd {
             GpuCommand::GetDisplayInfo(_) => {
                 let display_info: VirtioGpuRespDisplayInfo = self
@@ -144,18 +145,11 @@ impl VhostUserGpuBackend {
                 Ok(GpuResponse::OkDisplayInfo(virtio_display))
             }
             GpuCommand::GetEdid(info) => {
-                let scanout_id = self
-                    .gpu_backend
-                    .as_mut()
-                    .unwrap()
-                    .get_edid(&info.scanout)
-                    .unwrap();
-                println!("scanout info: {:?}", scanout_id);
-                virtio_gpu.get_edid(info.scanout)
+                virtio_gpu.get_edid(self.gpu_backend.as_mut().unwrap(), info.scanout)
             }
             GpuCommand::ResourceCreate2d(info) => {
+                debug!("ResourceCreate2d: {info:?}");
                 let resource_id = info.resource_id;
-
                 let resource_create_3d = ResourceCreate3D {
                     target: RUTABAGA_PIPE_TEXTURE_2D,
                     format: info.format,
@@ -680,7 +674,7 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
         Ok(())
     }
 
-    fn set_gpu_socket(&mut self, mut backend: GpuBackend) {
+    fn set_gpu_socket(&mut self, backend: GpuBackend) {
         self.gpu_backend = Some(backend);
     }
     fn get_config(&self, offset: u32, size: u32) -> Vec<u8> {
