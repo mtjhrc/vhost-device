@@ -148,6 +148,7 @@ impl VhostUserGpuBackend {
                 virtio_gpu.get_edid(self.gpu_backend.as_mut().unwrap(), info.scanout)
             }
             GpuCommand::ResourceCreate2d(info) => {
+                debug!("ResourceCreate2d: {info:?}");
                 let resource_id = info.resource_id;
                 let resource_create_3d = ResourceCreate3D {
                     target: RUTABAGA_PIPE_TEXTURE_2D,
