@@ -17,7 +17,7 @@ use std::{fmt, io};
 use crate::vhu_gpu::{self, Error};
 use rutabaga_gfx::RutabagaError;
 use thiserror::Error;
-use vm_memory::{ByteValued, Bytes, GuestAddress, GuestMemoryMmap};
+use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemoryMmap};
 use zerocopy::{AsBytes, FromBytes};
 
 //use super::super::descriptor_utils::{Reader, Writer};
@@ -675,6 +675,11 @@ impl GpuCommand {
         let hdr = cmd
             .read_obj::<virtio_gpu_ctrl_hdr>(addr)
             .map_err(|_| Error::DescriptorReadFailed)?;
+
+        let addr = addr
+            .checked_add(size_of::<virtio_gpu_ctrl_hdr>() as u64)
+            .ok_or(Error::DescriptorReadFailed)?;
+
         let cmd = match hdr.type_ {
             VIRTIO_GPU_CMD_GET_DISPLAY_INFO => GetDisplayInfo(
                 cmd.read_obj(addr)
