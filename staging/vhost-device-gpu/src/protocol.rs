@@ -17,6 +17,7 @@ use std::{fmt, io};
 use crate::vhu_gpu::{self, Error};
 use rutabaga_gfx::RutabagaError;
 use thiserror::Error;
+use vhost::vhost_user::gpu_message::VhostUserGpuEdidRequest;
 use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemoryMmap};
 use zerocopy::{AsBytes, FromBytes};
 

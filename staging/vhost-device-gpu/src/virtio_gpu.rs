@@ -102,6 +102,15 @@ pub const VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB: u32 = 0x209;
 pub const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32 = 0x300;
 pub const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x301;
 
+///This structure contains the scanout blob data
+#[derive(Copy, Clone, Debug)]
+pub struct VirtioScanoutBlobData {
+    pub width: u32,
+    pub height: u32,
+    pub strides: [u32; 4],
+    pub offsets: [u32; 4],
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct InvalidCommandType(u32);
 

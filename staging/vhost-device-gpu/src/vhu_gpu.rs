@@ -12,7 +12,7 @@ use std::{
 };
 
 use thiserror::Error as ThisError;
-use vhost::vhost_user::gpu_message::{VhostUserGpuEdidRequest, VirtioGpuRespDisplayInfo};
+use vhost::vhost_user::gpu_message::{VhostUserGpuEdidRequest, VhostUserGpuScanout, VirtioGpuRespDisplayInfo};
 use vhost::vhost_user::message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures};
 use vhost::vhost_user::GpuBackend;
 use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
@@ -131,7 +131,7 @@ impl VhostUserGpuBackend {
         desc_addr: GuestAddress,
     ) -> VirtioGpuResult {
         virtio_gpu.force_ctx_0();
-        trace!("process_gpu_command: {cmd:?}");
+        debug!("process_gpu_command: {cmd:?}");
         match cmd {
             GpuCommand::GetDisplayInfo(_) => {
                 let display_info: VirtioGpuRespDisplayInfo = self
@@ -145,7 +145,11 @@ impl VhostUserGpuBackend {
                 Ok(GpuResponse::OkDisplayInfo(virtio_display))
             }
             GpuCommand::GetEdid(info) => {
-                virtio_gpu.get_edid(self.gpu_backend.as_mut().unwrap(), info.scanout)
+                debug!("edid data: {info:?}");
+                let edid_req: VhostUserGpuEdidRequest = VhostUserGpuEdidRequest {
+                    scanout_id: info.scanout,
+                };
+                virtio_gpu.get_edid(self.gpu_backend.as_mut().unwrap(), edid_req)
             }
             GpuCommand::ResourceCreate2d(info) => {
                 debug!("ResourceCreate2d: {info:?}");
@@ -166,8 +170,19 @@ impl VhostUserGpuBackend {
                 virtio_gpu.resource_create_3d(resource_id, resource_create_3d)
             }
             GpuCommand::ResourceUnref(info) => virtio_gpu.unref_resource(info.resource_id),
-            GpuCommand::SetScanout(_info) => {
-                panic!("virtio_gpu: GpuCommand::SetScanout unimplemented");
+            GpuCommand::SetScanout(info) => {
+                debug!("SetScanout: {info:?}");
+                let gpu_scanout: VhostUserGpuScanout = VhostUserGpuScanout {
+                    scanout_id: info.scanout_id,
+                    width: info.r.width,
+                    height: info.r.height,
+                };
+                virtio_gpu.set_scanout(
+                    self.gpu_backend.as_mut().unwrap(),
+                    gpu_scanout,
+                    info.resource_id,
+                    None,
+                )
             }
             GpuCommand::ResourceFlush(info) => virtio_gpu.flush_resource(info.resource_id),
             GpuCommand::TransferToHost2d(info) => {
@@ -210,7 +225,10 @@ impl VhostUserGpuBackend {
                 let resource_id = info.resource_id;
                 virtio_gpu.resource_assign_uuid(resource_id)
             }
-            GpuCommand::GetCapsetInfo(info) => virtio_gpu.get_capset_info(info.capset_index),
+            GpuCommand::GetCapsetInfo(info) => {
+                debug!("capset info: {info:?}");
+                virtio_gpu.get_capset_info(info.capset_index)
+            }
             GpuCommand::GetCapset(info) => {
                 virtio_gpu.get_capset(info.capset_id, info.capset_version)
             }
