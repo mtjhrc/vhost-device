@@ -1,11 +1,13 @@
 use std::collections::BTreeMap;
 use std::env;
+use std::num::NonZeroU32;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::vhu_gpu::Error;
+use crate::virtio_gpu::VirtioScanoutBlobData;
 use libc::c_void;
 use log::{debug, error};
 use rutabaga_gfx::{
@@ -15,7 +17,7 @@ use rutabaga_gfx::{
     RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
 };
 //use utils::eventfd::EventFd;
-use vhost::vhost_user::gpu_message::VirtioGpuRespDisplayInfo;
+use vhost::vhost_user::gpu_message::{VhostUserGpuEdidRequest, VhostUserGpuScanout, VirtioGpuRespDisplayInfo};
 use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 
@@ -25,7 +27,7 @@ use super::protocol::{
     GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE,
     VIRTIO_GPU_BLOB_MEM_HOST3D,
 };
-use crate::protocol::VIRTIO_GPU_FLAG_INFO_RING_IDX;
+use crate::protocol::{virtio_gpu_set_scanout, VIRTIO_GPU_FLAG_INFO_RING_IDX};
 use std::result::Result;
 use vhost::vhost_user::GpuBackend;
 
@@ -81,6 +83,7 @@ struct VirtioGpuResource {
     size: u64,
     shmem_offset: Option<u64>,
     rutabaga_external_mapping: bool,
+    scanout_data: Option<VirtioScanoutBlobData>,
 }
 
 impl VirtioGpuResource {
@@ -91,6 +94,7 @@ impl VirtioGpuResource {
             size,
             shmem_offset: None,
             rutabaga_external_mapping: false,
+            scanout_data: None,
         }
     }
 }
@@ -260,8 +264,9 @@ impl VirtioGpu {
 
     /// Gets the EDID for the specified scanout ID. If that scanout is not enabled, it would return
     /// the EDID of a default display.
-    pub fn get_edid(&self, gpu_backend: &mut GpuBackend, scanout_id: u32) -> VirtioGpuResult {
-        let edid = gpu_backend.get_edid(&scanout_id).map_err(|e| {
+    pub fn get_edid(&self, gpu_backend: &mut GpuBackend, edid_req: VhostUserGpuEdidRequest) -> VirtioGpuResult {
+        debug!("edid request: {edid_req:?}");
+        let edid = gpu_backend.get_edid(&edid_req).map_err(|e| {
             error!("Failed to get edid from frontend: {}", e);
             ErrUnspec
         })?;
@@ -269,6 +274,17 @@ impl VirtioGpu {
         Ok(OkEdid {
             blob: Box::from(&edid.edid[..edid.size as usize]),
         })
+    }
+
+    /// Sets the given resource id as the source of scanout to the display.
+    pub fn set_scanout(
+        &mut self,
+        gpu_backend: &mut GpuBackend,
+        gpu_scanout: VhostUserGpuScanout,
+        resource_id: u32,
+        scanout_data: Option<VirtioScanoutBlobData>,
+    ) -> VirtioGpuResult {
+        self.update_scanout_resource(gpu_backend, gpu_scanout, resource_id, scanout_data)
     }
 
     /// Creates a 3D resource with the given properties and resource_id.
@@ -600,6 +616,45 @@ impl VirtioGpu {
         }
 
         resource.shmem_offset = None;
+
+        Ok(OkNoData)
+    }
+    fn update_scanout_resource(
+        &mut self,
+        gpu_backend: &mut GpuBackend,
+        gpu_scanout: VhostUserGpuScanout,
+        resource_id: u32,
+        scanout_data: Option<VirtioScanoutBlobData>,
+    ) -> VirtioGpuResult {
+        gpu_backend.set_scanout(&gpu_scanout).map_err(|e| {
+            error!("Failed to set scanout from frontend: {}", e);
+            ErrUnspec
+        })?;
+
+        // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
+        if resource_id == 0 {
+            error!("NOT IMPLEMENTED: disable scanout");
+            return Ok(OkNoData);
+        }
+
+        let resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        resource.scanout_data = scanout_data;
+
+        //todo:
+        //create a display surface
+
+        // `resource_id` has already been verified to be non-zero
+        let resource_id = match NonZeroU32::new(resource_id) {
+            Some(id) => id,
+            None => return Ok(OkNoData),
+        };
+        //todo:
+        //store resource_id in a struct that will be used later
+        debug!("resource id: {:?}", resource_id);
 
         Ok(OkNoData)
     }
