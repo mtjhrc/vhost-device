@@ -1055,8 +1055,8 @@ dependencies = [
 
 [[package]]
 name = "vhost"
-version = "0.10.0"
-source = "git+https://github.com/mtjhrc/vhost.git?branch=main#a7a589a521361334d30bb14d692abab896adccb8"
+version = "0.11.0"
+source = "git+https://github.com/mtjhrc/vhost.git?branch=gpuwork-rebased#a9cbbc2438e289cd64e7be40b65047a3db1b1880"
 dependencies = [
  "bitflags 2.4.1",
  "libc",
@@ -1075,11 +1075,10 @@ dependencies = [
  "log",
  "rutabaga_gfx",
  "thiserror",
- "vhost 0.10.0",
- "vhost-user-backend 0.13.1",
+ "vhost 0.11.0",
+ "vhost-user-backend 0.14.0",
  "virtio-bindings",
- "virtio-queue 0.10.0",
- "virtio-queue 0.11.0",
+ "virtio-queue 0.12.0",
  "vm-memory 0.13.1",
  "vm-memory 0.14.0",
  "vmm-sys-util 0.12.1",
@@ -1149,14 +1148,14 @@ dependencies = [
 
 [[package]]
 name = "vhost-user-backend"
-version = "0.13.1"
-source = "git+https://github.com/mtjhrc/vhost.git?branch=main#a7a589a521361334d30bb14d692abab896adccb8"
+version = "0.14.0"
+source = "git+https://github.com/mtjhrc/vhost.git?branch=gpuwork-rebased#a9cbbc2438e289cd64e7be40b65047a3db1b1880"
 dependencies = [
  "libc",
  "log",
- "vhost 0.10.0",
+ "vhost 0.11.0",
  "virtio-bindings",
- "virtio-queue 0.11.0",
+ "virtio-queue 0.12.0",
  "vm-memory 0.14.0",
  "vmm-sys-util 0.12.1",
 ]
@@ -1181,9 +1180,9 @@ dependencies = [
 
 [[package]]
 name = "virtio-queue"
-version = "0.11.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3f69a13d6610db9312acbb438b0390362af905d37634a2106be70c0f734986d"
+checksum = "07d8406e7250c934462de585d8f2d2781c31819bca1fbb7c5e964ca6bbaabfe8"
 dependencies = [
  "log",
  "virtio-bindings",

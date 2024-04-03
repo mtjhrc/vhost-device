@@ -4,54 +4,46 @@
 //
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
-use log::{debug, error, info, trace, warn};
+use log::{debug, error, trace, warn};
 use std::cell::RefCell;
 use std::{
     convert,
-    io::{self, Read, Result as IoResult, Write},
+    io::{self, Result as IoResult},
 };
 
 use thiserror::Error as ThisError;
-use vhost::vhost_user::gpu_message::{VhostUserGpuEdidRequest, VhostUserGpuScanout, VirtioGpuRespDisplayInfo};
+use vhost::vhost_user::gpu_message::{
+    VhostUserGpuEdidRequest, VhostUserGpuScanout, VirtioGpuRespDisplayInfo,
+};
 use vhost::vhost_user::message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures};
 use vhost::vhost_user::GpuBackend;
 use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
 use virtio_bindings::bindings::virtio_ring::{
     VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
 };
-use virtio_bindings::virtio_config::VIRTIO_F_ANY_LAYOUT;
-use virtio_bindings::virtio_config::VIRTIO_F_RING_RESET;
 use virtio_bindings::{
-    bindings::virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_VERSION_1},
+    bindings::virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_RING_RESET, VIRTIO_F_VERSION_1},
     virtio_gpu::{VIRTIO_GPU_F_CONTEXT_INIT, VIRTIO_GPU_F_RESOURCE_BLOB},
 };
-use virtio_queue::{DescriptorChain, QueueOwnedT};
-use vm_memory::{
-    ByteValued, Bytes, GuestAddress, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryLoadGuard,
-    GuestMemoryMmap, Le32,
-};
+use virtio_queue::{QueueOwnedT, Reader, Writer};
+use vm_memory::{ByteValued, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap, Le32};
 use vmm_sys_util::epoll::EventSet;
 use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
 
-use super::protocol::{
-    virtio_gpu_ctrl_hdr, virtio_gpu_mem_entry, GpuCommand, GpuResponse, VirtioGpuResult,
-};
+use super::protocol::{virtio_gpu_ctrl_hdr, GpuCommand, GpuResponse, VirtioGpuResult};
 use super::virt_gpu::{VirtioGpu, VirtioGpuRing, VirtioShmRegion};
+use crate::protocol::GpuResponse::{ErrUnspec, OkNoData};
 use crate::protocol::{VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX};
-use crate::{
-    virtio_gpu::GpuCommandType,
-    //VirtioShmRegion,
-    virtio_gpu::*,
-    GpuConfig,
-};
+use crate::{protocol, virtio_gpu::*, GpuConfig};
 use rutabaga_gfx::{
-    ResourceCreate3D, ResourceCreateBlob, RutabagaFence, Transfer3D,
-    RUTABAGA_PIPE_BIND_RENDER_TARGET, RUTABAGA_PIPE_TEXTURE_2D,
+    ResourceCreate3D, RutabagaFence, Transfer3D, RUTABAGA_PIPE_BIND_RENDER_TARGET,
+    RUTABAGA_PIPE_TEXTURE_2D,
 };
 
 type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Copy, Clone, Debug, Eq, PartialEq, ThisError)]
+#[derive(Debug, ThisError)]
+#[allow(dead_code)] //TODO: remove unused variants
 pub(crate) enum Error {
     #[error("Failed to handle event, didn't match EPOLLIN")]
     HandleEventNotEpollIn,
@@ -65,8 +57,8 @@ pub(crate) enum Error {
     DescriptorWriteFailed,
     #[error("Invalid command type {0}")]
     InvalidCommandType(u32),
-    #[error("Failed to send notification")]
-    NotificationFailed,
+    #[error("Failed to send used queue notification: {0}")]
+    NotificationFailed(io::Error),
     #[error("No memory configured")]
     NoMemoryConfigured,
     #[error("Failed to create new EventFd")]
@@ -79,6 +71,18 @@ pub(crate) enum Error {
     UnexpectedDescriptorCount(usize),
     #[error("Invalid descriptor size, expected: {0}, found: {1}")]
     UnexpectedDescriptorSize(usize, u32),
+    #[error("Failed to create an iterator over a descriptor chain: {0}")]
+    CreateIteratorDescChain(virtio_queue::Error),
+    #[error("Failed to create descriptor chain Reader: {0}")]
+    CreateReader(virtio_queue::Error),
+    #[error("Failed to create descriptor chain Writer: {0}")]
+    CreateWriter(virtio_queue::Error),
+    #[error("Failed to decode gpu command: {0}")]
+    GpuCommandDecode(protocol::GpuCommandDecodeError),
+    #[error("Failed to encode gpu response: {0}")]
+    GpuResponseEncode(protocol::GpuResponseEncodeError),
+    #[error("Failed add used chain to queue: {0}")]
+    QueueAddUsed(virtio_queue::Error),
 }
 
 impl convert::From<Error> for io::Error {
@@ -95,8 +99,6 @@ pub(crate) struct VhostUserGpuBackend {
     mem: Option<GuestMemoryAtomic<GuestMemoryMmap>>,
     shm_region: Option<VirtioShmRegion>,
 }
-
-type GpuDescriptorChain = DescriptorChain<GuestMemoryLoadGuard<GuestMemoryMmap<()>>>;
 
 impl VhostUserGpuBackend {
     pub fn new(gpu_config: GpuConfig) -> Result<Self> {
@@ -124,16 +126,13 @@ impl VhostUserGpuBackend {
     fn process_gpu_command(
         &mut self,
         virtio_gpu: &mut VirtioGpu,
-        mem: &GuestMemoryMmap,
         hdr: virtio_gpu_ctrl_hdr,
         cmd: GpuCommand,
-        reader: &GuestMemoryMmap,
-        desc_addr: GuestAddress,
     ) -> VirtioGpuResult {
         virtio_gpu.force_ctx_0();
         debug!("process_gpu_command: {cmd:?}");
         match cmd {
-            GpuCommand::GetDisplayInfo(_) => {
+            GpuCommand::GetDisplayInfo => {
                 let display_info: VirtioGpuRespDisplayInfo = self
                     .gpu_backend
                     .as_mut()
@@ -190,8 +189,9 @@ impl VhostUserGpuBackend {
                 let transfer = Transfer3D::new_2d(info.r.x, info.r.y, info.r.width, info.r.height);
                 virtio_gpu.transfer_write(0, resource_id, transfer)
             }
-            GpuCommand::ResourceAttachBacking(info) => {
-                todo!()
+            GpuCommand::ResourceAttachBacking(_info) => {
+                error!("ResourceAttachBacking NOT IMPLEMENTED");
+                Ok(OkNoData)
             }
             // GpuCommand::ResourceAttachBacking(info) => {
             //     let available_bytes = reader.available_bytes();
@@ -384,164 +384,95 @@ impl VhostUserGpuBackend {
             }
         }
     }
-    /// Process the requests in the vring and dispatch replies
-    fn process_requests(
+
+    fn process_control_queue_chain(
         &mut self,
-        requests: Vec<GpuDescriptorChain>,
         virtio_gpu: &mut VirtioGpu,
         vring: &VringRwLock,
+        head_index: u16,
+        reader: &mut Reader,
+        writer: &mut Writer,
+        signal_used_queue: &mut bool,
     ) -> Result<()> {
-        if requests.is_empty() {
-            info!("No pending requests");
+        let mut response = ErrUnspec;
+
+        let ctrl_hdr = match GpuCommand::decode(reader) {
+            Ok((ctrl_hdr, gpu_cmd)) => {
+                let response_result = self.process_gpu_command(virtio_gpu, ctrl_hdr, gpu_cmd);
+                // Unwrap the response from inside Result and log information
+                response = match response_result {
+                    Ok(response) => {
+                        trace!("GpuCommand {gpu_cmd:?} success: {response:?}");
+                        response
+                    }
+                    Err(response) => {
+                        debug!("GpuCommand {gpu_cmd:?} failed: {response:?}");
+                        response
+                    }
+                };
+                Some(ctrl_hdr)
+            }
+            Err(e) => {
+                warn!("Failed to decode GpuCommand: {e}");
+                None
+            }
+        };
+
+        if writer.available_bytes() == 0 {
+            debug!("Command does not have descriptors for a response");
+            vring.add_used(head_index, 0).map_err(Error::QueueAddUsed)?;
+            *signal_used_queue = true;
             return Ok(());
         }
-        let mut used_any = false;
 
-        // Iterate over each gpu request.
-        //
-        // The layout of the various structures, to be read from and written into the descriptor
-        // buffers, is defined in the Virtio specification for each protocol.
-        for desc_chain in requests.clone() {
-            let descriptors: Vec<_> = desc_chain.clone().collect();
-            if descriptors.len() < 2 {
-                return Err(Error::UnexpectedDescriptorCount(descriptors.len()).into());
-            }
+        let mut fence_id = 0;
+        let mut ctx_id = 0;
+        let mut flags = 0;
+        let mut ring_idx = 0;
 
-            info!("Request contains {} descriptors", descriptors.len(),);
+        if let Some(ctrl_hdr) = ctrl_hdr {
+            if ctrl_hdr.flags & VIRTIO_GPU_FLAG_FENCE != 0 {
+                flags = ctrl_hdr.flags;
+                fence_id = ctrl_hdr.fence_id;
+                ctx_id = ctrl_hdr.ctx_id;
+                ring_idx = ctrl_hdr.ring_idx;
 
-            for (i, desc) in descriptors.iter().enumerate() {
-                let perm = if desc.is_write_only() {
-                    "write only"
-                } else {
-                    "read only"
+                let fence = RutabagaFence {
+                    flags,
+                    fence_id,
+                    ctx_id,
+                    ring_idx,
                 };
-
-                // We now can iterate over the set of descriptors and process the messages. There
-                // will be a number of read only descriptors containing messages as defined by the
-                // specification. If any replies are needed, the driver should have placed one or
-                // more writable descriptors at the end for the device to use to reply.
-                info!("Length of the {} descriptor@{} is: {}", perm, i, desc.len());
-            }
-
-            // Request Header descriptor
-            let desc_request = descriptors[0];
-            if desc_request.is_write_only() {
-                return Err(Error::UnexpectedWriteOnlyDescriptor(0).into());
-            }
-
-            // let mut reader = desc_chain.memory().read_obj::<virtio_gpu_mem_entry>(desc_request.addr());
-            let mut reader = desc_chain.memory();
-            let request = desc_chain
-                .memory()
-                .read_obj::<VirtioGpuCtrlHdr>(desc_request.addr())
-                .map_err(|_| Error::DescriptorReadFailed)?;
-
-            // Keep track of bytes that will be written in the VQ.
-            let mut used_len = 0;
-
-            // Reply header descriptor.
-            let desc_hdr = descriptors[1];
-            if !desc_hdr.is_write_only() {
-                return Err(Error::UnexpectedReadableDescriptor(1).into());
-            }
-
-            let Some(ref atomic_mem) = self.mem else {
-                return Err(Error::NoMemoryConfigured.into());
-            };
-            let mem: GuestMemoryMmap = (*atomic_mem.memory().into_inner()).clone();
-
-            let mut resp: std::result::Result<GpuResponse, GpuResponse> =
-                Err(GpuResponse::ErrUnspec);
-            let mut gpu_cmd: Option<GpuCommand> = None;
-            let mut ctrl_hdr: Option<virtio_gpu_ctrl_hdr> = None;
-            let mut len = 0;
-            let mut desc_addr = desc_request.addr();
-            let mut desc_hdraddr = desc_hdr.addr();
-
-            match GpuCommand::decode(&reader, desc_addr) {
-                Ok((hdr, cmd)) => {
-                    resp = self.process_gpu_command(virtio_gpu, &mem, hdr, cmd, &reader, desc_addr);
-                    ctrl_hdr = Some(hdr);
-                    gpu_cmd = Some(cmd);
-                }
-                Err(e) => debug!("descriptor decode error: {:?}", e),
-            }
-            let mut gpu_response = match resp {
-                Ok(gpu_response) => gpu_response,
-                Err(gpu_response) => {
-                    debug!("{:?} -> {:?}", gpu_cmd, gpu_response);
-                    gpu_response
-                }
-            };
-
-            let mut add_to_queue = true;
-
-            let mut fence_id = 0;
-            let mut ctx_id = 0;
-            let mut flags = 0;
-            let mut ring_idx = 0;
-            if let Some(_cmd) = gpu_cmd {
-                let ctrl_hdr = ctrl_hdr.unwrap();
-                if ctrl_hdr.flags & VIRTIO_GPU_FLAG_FENCE != 0 {
-                    flags = ctrl_hdr.flags;
-                    fence_id = ctrl_hdr.fence_id;
-                    ctx_id = ctrl_hdr.ctx_id;
-                    ring_idx = ctrl_hdr.ring_idx;
-
-                    let fence = RutabagaFence {
-                        flags,
-                        fence_id,
-                        ctx_id,
-                        ring_idx,
-                    };
-                    gpu_response = match virtio_gpu.create_fence(fence) {
-                        Ok(_) => gpu_response,
-                        Err(fence_resp) => {
-                            warn!("create_fence {} -> {:?}", fence_id, fence_resp);
-                            fence_resp
-                        }
-                    };
+                if let Err(fence_response) = virtio_gpu.create_fence(fence) {
+                    warn!("Failed to create fence: fence_id: {fence_id} fence_response: {fence_response}");
+                    response = fence_response;
                 }
             }
-
-            // Prepare the response now, even if it is going to wait until
-            // fence is complete.
-
-            //edit reader definition later to something better signifying response wrte
-            match gpu_response.encode(flags, fence_id, ctx_id, ring_idx, &reader, desc_hdraddr) {
-                Ok(l) => len = l,
-                Err(e) => debug!("ctrl queue response encode error: {:?}", e),
-            }
-
-            if flags & VIRTIO_GPU_FLAG_FENCE != 0 {
-                let ring = match flags & VIRTIO_GPU_FLAG_INFO_RING_IDX {
-                    0 => VirtioGpuRing::Global,
-                    _ => VirtioGpuRing::ContextSpecific { ctx_id, ring_idx },
-                };
-
-                add_to_queue =
-                    virtio_gpu.process_fence(ring, fence_id, desc_chain.head_index(), len);
-            }
-            if add_to_queue {
-                used_len += desc_hdr.len();
-                if vring.add_used(desc_chain.head_index(), used_len).is_err() {
-                    log::error!("Couldn't return used descriptors to the ring");
-                }
-                used_any = true;
-            }
-
-            // // Keep track of bytes that will be written in the VQ.
-            // let mut used_len = 0;
-
-            // // Response Header descriptor.
-            // let desc_response = descriptors[1];
-            // if !desc_response.is_write_only() {
-            //     return Err(Error::UnexpectedReadableDescriptor(1).into());
-            // }
-            // let gpu_cmd_type = GpuCommandType::try_from(request.gpu_type).map_err(Error::from)?;
-            // //let resp = self.process_gpu_command(gpu_cmd_type);
         }
 
+        // Prepare the response now, even if it is going to wait until
+        // fence is complete.
+        let response_len = response
+            .encode(flags, fence_id, ctx_id, ring_idx, writer)
+            .map_err(Error::GpuResponseEncode)?;
+
+        let mut add_to_queue = true;
+        if flags & VIRTIO_GPU_FLAG_FENCE != 0 {
+            let ring = match flags & VIRTIO_GPU_FLAG_INFO_RING_IDX {
+                0 => VirtioGpuRing::Global,
+                _ => VirtioGpuRing::ContextSpecific { ctx_id, ring_idx },
+            };
+            debug!("Trying to process_fence for the command");
+            add_to_queue = virtio_gpu.process_fence(ring, fence_id, head_index, response_len);
+        }
+
+        if add_to_queue {
+            vring
+                .add_used(head_index, response_len)
+                .map_err(Error::QueueAddUsed)?;
+            trace!("add_used {}bytes", response_len);
+            *signal_used_queue = true;
+        }
         Ok(())
     }
 
@@ -551,30 +482,41 @@ impl VhostUserGpuBackend {
         virtio_gpu: &mut VirtioGpu,
         vring: &VringRwLock,
     ) -> Result<()> {
-        // Collect all pending requests
-        debug!("Processing control queue");
-        let Some(ref atomic_mem) = self.mem else {
-            return Err(Error::NoMemoryConfigured.into());
-        };
-        let requests: Vec<_> = vring
+        let mem = self.mem.as_mut().unwrap().memory().into_inner();
+        let desc_chains: Vec<_> = vring
             .get_mut()
             .get_queue_mut()
-            .iter(atomic_mem.memory())
-            .map_err(|_| Error::DescriptorNotFound)?
+            .iter(mem.clone())
+            .map_err(Error::CreateIteratorDescChain)?
             .collect();
 
-        let mem: GuestMemoryMmap = (*atomic_mem.memory().into_inner()).clone();
+        let mut signal_used_queue = false;
+        for desc_chain in desc_chains {
+            let head_index = desc_chain.head_index();
+            let mut reader = desc_chain
+                .clone()
+                .reader(&mem)
+                .map_err(Error::CreateReader)?;
+            let mut writer = desc_chain.writer(&mem).map_err(Error::CreateWriter)?;
 
-        if self.process_requests(requests, virtio_gpu, vring).is_ok() {
-            // Send notification once all the requests are processed
-            debug!("Sending processed request notification");
-            vring
-                .signal_used_queue()
-                .map_err(|_| Error::NotificationFailed)?;
-            debug!("Notification sent");
+            self.process_control_queue_chain(
+                virtio_gpu,
+                vring,
+                head_index,
+                &mut reader,
+                &mut writer,
+                &mut signal_used_queue,
+            )?;
         }
 
+        if signal_used_queue {
+            debug!("Notifying used queue");
+            vring
+                .signal_used_queue()
+                .map_err(Error::NotificationFailed)?;
+        }
         debug!("Processing control queue finished");
+
         Ok(())
     }
 

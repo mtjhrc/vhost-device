@@ -17,7 +17,9 @@ use rutabaga_gfx::{
     RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
 };
 //use utils::eventfd::EventFd;
-use vhost::vhost_user::gpu_message::{VhostUserGpuEdidRequest, VhostUserGpuScanout, VirtioGpuRespDisplayInfo};
+use vhost::vhost_user::gpu_message::{
+    VhostUserGpuEdidRequest, VhostUserGpuScanout, VirtioGpuRespDisplayInfo,
+};
 use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 
@@ -149,7 +151,7 @@ impl VirtioGpu {
 
                     queue_ctl
                         .signal_used_queue()
-                        .map_err(|_| Error::NotificationFailed)
+                        .map_err(Error::NotificationFailed)
                         .unwrap();
                     debug!("Notification sent");
                     // interrupt_status.fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
@@ -264,7 +266,11 @@ impl VirtioGpu {
 
     /// Gets the EDID for the specified scanout ID. If that scanout is not enabled, it would return
     /// the EDID of a default display.
-    pub fn get_edid(&self, gpu_backend: &mut GpuBackend, edid_req: VhostUserGpuEdidRequest) -> VirtioGpuResult {
+    pub fn get_edid(
+        &self,
+        gpu_backend: &mut GpuBackend,
+        edid_req: VhostUserGpuEdidRequest,
+    ) -> VirtioGpuResult {
         debug!("edid request: {edid_req:?}");
         let edid = gpu_backend.get_edid(&edid_req).map_err(|e| {
             error!("Failed to get edid from frontend: {}", e);
