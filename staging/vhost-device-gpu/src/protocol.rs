@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 #![allow(non_camel_case_types)]
 
+use log::trace;
 use std::cmp::min;
 use std::convert::From;
 use std::fmt::Display;
@@ -17,8 +18,8 @@ use std::{fmt, io};
 use crate::vhu_gpu::{self, Error};
 use rutabaga_gfx::RutabagaError;
 use thiserror::Error;
-use vhost::vhost_user::gpu_message::VhostUserGpuEdidRequest;
-use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemoryMmap};
+use virtio_queue::{Reader, Writer};
+use vm_memory::ByteValued;
 use zerocopy::{AsBytes, FromBytes};
 
 //use super::super::descriptor_utils::{Reader, Writer};
@@ -194,7 +195,6 @@ unsafe impl ByteValued for virtio_gpu_rect {}
 #[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct virtio_gpu_get_edid {
-    pub hdr: virtio_gpu_ctrl_hdr,
     pub scanout: u32,
     pub padding: u32,
 }
@@ -572,7 +572,7 @@ pub const VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM: u32 = 134;
 /// A virtio gpu command and associated metadata specific to each command.
 #[derive(Copy, Clone)]
 pub enum GpuCommand {
-    GetDisplayInfo(virtio_gpu_ctrl_hdr),
+    GetDisplayInfo,
     GetEdid(virtio_gpu_get_edid),
     ResourceCreate2d(virtio_gpu_resource_create_2d),
     ResourceUnref(virtio_gpu_resource_unref),
@@ -636,7 +636,7 @@ impl fmt::Debug for GpuCommand {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         use self::GpuCommand::*;
         match self {
-            GetDisplayInfo(_info) => f.debug_struct("GetDisplayInfo").finish(),
+            GetDisplayInfo => f.debug_struct("GetDisplayInfo").finish(),
             GetEdid(_info) => f.debug_struct("GetEdid").finish(),
             ResourceCreate2d(_info) => f.debug_struct("ResourceCreate2d").finish(),
             ResourceUnref(_info) => f.debug_struct("ResourceUnref").finish(),
@@ -669,123 +669,90 @@ impl fmt::Debug for GpuCommand {
 impl GpuCommand {
     /// Decodes a command from the given chunk of memory.
     pub fn decode(
-        cmd: &GuestMemoryMmap,
-        addr: GuestAddress,
+        reader: &mut Reader,
     ) -> Result<(virtio_gpu_ctrl_hdr, GpuCommand), GpuCommandDecodeError> {
         use self::GpuCommand::*;
-        let hdr = cmd
-            .read_obj::<virtio_gpu_ctrl_hdr>(addr)
+        let hdr = reader
+            .read_obj::<virtio_gpu_ctrl_hdr>()
             .map_err(|_| Error::DescriptorReadFailed)?;
-
-        let addr = addr
-            .checked_add(size_of::<virtio_gpu_ctrl_hdr>() as u64)
-            .ok_or(Error::DescriptorReadFailed)?;
-
+        trace!("Decoding GpuCommand 0x{:0x}", hdr.type_);
         let cmd = match hdr.type_ {
-            VIRTIO_GPU_CMD_GET_DISPLAY_INFO => GetDisplayInfo(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_GET_EDID => GetEdid(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_RESOURCE_CREATE_2D => ResourceCreate2d(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_RESOURCE_UNREF => ResourceUnref(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_SET_SCANOUT => SetScanout(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_SET_SCANOUT_BLOB => SetScanoutBlob(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_RESOURCE_FLUSH => ResourceFlush(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D => TransferToHost2d(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING => ResourceAttachBacking(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING => ResourceDetachBacking(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_GET_CAPSET_INFO => GetCapsetInfo(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_GET_CAPSET => GetCapset(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_CTX_CREATE => CtxCreate(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_CTX_DESTROY => CtxDestroy(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE => CtxAttachResource(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE => CtxDetachResource(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_RESOURCE_CREATE_3D => ResourceCreate3d(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D => TransferToHost3d(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D => TransferFromHost3d(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_SUBMIT_3D => CmdSubmit3d(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB => ResourceCreateBlob(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB => ResourceMapBlob(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB => ResourceUnmapBlob(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_UPDATE_CURSOR => UpdateCursor(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_MOVE_CURSOR => MoveCursor(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
-            VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID => ResourceAssignUuid(
-                cmd.read_obj(addr)
-                    .map_err(|_| Error::DescriptorReadFailed)?,
-            ),
+            VIRTIO_GPU_CMD_GET_DISPLAY_INFO => GetDisplayInfo,
+            VIRTIO_GPU_CMD_GET_EDID => {
+                GetEdid(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_RESOURCE_CREATE_2D => {
+                ResourceCreate2d(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_RESOURCE_UNREF => {
+                ResourceUnref(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_SET_SCANOUT => {
+                SetScanout(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_SET_SCANOUT_BLOB => {
+                SetScanoutBlob(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_RESOURCE_FLUSH => {
+                ResourceFlush(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D => {
+                TransferToHost2d(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING => {
+                ResourceAttachBacking(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING => {
+                ResourceDetachBacking(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_GET_CAPSET_INFO => {
+                GetCapsetInfo(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_GET_CAPSET => {
+                GetCapset(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_CTX_CREATE => {
+                CtxCreate(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_CTX_DESTROY => {
+                CtxDestroy(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE => {
+                CtxAttachResource(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE => {
+                CtxDetachResource(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_RESOURCE_CREATE_3D => {
+                ResourceCreate3d(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D => {
+                TransferToHost3d(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D => {
+                TransferFromHost3d(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_SUBMIT_3D => {
+                CmdSubmit3d(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB => {
+                ResourceCreateBlob(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB => {
+                ResourceMapBlob(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB => {
+                ResourceUnmapBlob(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_UPDATE_CURSOR => {
+                UpdateCursor(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_MOVE_CURSOR => {
+                MoveCursor(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
+            VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID => {
+                ResourceAssignUuid(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+            }
             _ => return Err(GpuCommandDecodeError::InvalidType(hdr.type_)),
         };
 
@@ -885,8 +852,7 @@ impl GpuResponse {
         fence_id: u64,
         ctx_id: u32,
         ring_idx: u8,
-        resp: &GuestMemoryMmap,
-        desc_addr: GuestAddress,
+        writer: &mut Writer,
     ) -> Result<u32, GpuResponseEncodeError> {
         let hdr = virtio_gpu_ctrl_hdr {
             type_: self.get_type(),
@@ -911,7 +877,8 @@ impl GpuResponse {
                     disp_mode.r.height = height;
                     disp_mode.enabled = enabled as u32;
                 }
-                resp.write_obj(disp_info, desc_addr)
+                writer
+                    .write_obj(disp_info)
                     .map_err(|_| Error::DescriptorWriteFailed)?;
                 size_of_val(&disp_info)
             }
@@ -923,7 +890,8 @@ impl GpuResponse {
                     padding: Default::default(),
                 };
                 edid_info.edid.copy_from_slice(&blob);
-                resp.write_obj(edid_info, desc_addr)
+                writer
+                    .write_obj(edid_info)
                     .map_err(|_| Error::DescriptorWriteFailed)?;
                 size_of_val(&edid_info)
             }
@@ -932,24 +900,23 @@ impl GpuResponse {
                 version,
                 size,
             } => {
-                resp.write_obj(
-                    virtio_gpu_resp_capset_info {
+                writer
+                    .write_obj(virtio_gpu_resp_capset_info {
                         hdr,
                         capset_id,
                         capset_max_version: version,
                         capset_max_size: size,
                         padding: 0u32,
-                    },
-                    desc_addr,
-                )
-                .map_err(|_| Error::DescriptorWriteFailed)?;
+                    })
+                    .map_err(|_| Error::DescriptorWriteFailed)?;
                 size_of::<virtio_gpu_resp_capset_info>()
             }
             GpuResponse::OkCapset(ref data) => {
-                resp.write_obj(hdr, desc_addr)
+                writer
+                    .write_obj(hdr)
                     .map_err(|_| Error::DescriptorWriteFailed)?;
-                //figure out the right method call
-                resp.write_slice(data, desc_addr)
+                writer
+                    .write(data)
                     .map_err(|_| Error::DescriptorWriteFailed)?;
                 size_of_val(&hdr) + data.len()
             }
@@ -975,8 +942,8 @@ impl GpuResponse {
                     offsets,
                 };
                 //if resp.available_bytes() >= size_of_val(&plane_info) {
-                if let Err(err) = resp
-                    .write_obj(plane_info, desc_addr)
+                if let Err(err) = writer
+                    .write_obj(plane_info)
                     .map_err(|_| Error::DescriptorWriteFailed)
                 {
                     size_of_val(&plane_info)
@@ -984,21 +951,20 @@ impl GpuResponse {
                     // In case there is too little room in the response slice to store the
                     // entire virtio_gpu_resp_resource_plane_info, convert response to a regular
                     // VIRTIO_GPU_RESP_OK_NODATA and attempt to return that.
-                    resp.write_obj(
-                        virtio_gpu_ctrl_hdr {
+                    writer
+                        .write_obj(virtio_gpu_ctrl_hdr {
                             type_: VIRTIO_GPU_RESP_OK_NODATA,
                             ..hdr
-                        },
-                        desc_addr,
-                    )
-                    .map_err(|_| Error::DescriptorWriteFailed)?;
+                        })
+                        .map_err(|_| Error::DescriptorWriteFailed)?;
                     size_of_val(&hdr)
                 }
             }
             GpuResponse::OkResourceUuid { uuid } => {
                 let resp_info = virtio_gpu_resp_resource_uuid { hdr, uuid };
 
-                resp.write_obj(resp_info, desc_addr)
+                writer
+                    .write_obj(resp_info)
                     .map_err(|_| Error::DescriptorWriteFailed)?;
                 size_of_val(&resp_info)
             }
@@ -1009,12 +975,14 @@ impl GpuResponse {
                     padding: Default::default(),
                 };
 
-                resp.write_obj(resp_info, desc_addr)
+                writer
+                    .write_obj(resp_info)
                     .map_err(|_| Error::DescriptorWriteFailed)?;
                 size_of_val(&resp_info)
             }
             _ => {
-                resp.write_obj(hdr, desc_addr)
+                writer
+                    .write_obj(hdr)
                     .map_err(|_| Error::DescriptorWriteFailed)?;
                 size_of_val(&hdr)
             }
