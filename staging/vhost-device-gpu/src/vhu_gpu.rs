@@ -189,31 +189,11 @@ impl VhostUserGpuBackend {
                 let transfer = Transfer3D::new_2d(info.r.x, info.r.y, info.r.width, info.r.height);
                 virtio_gpu.transfer_write(0, resource_id, transfer)
             }
-            GpuCommand::ResourceAttachBacking(_info) => {
-                error!("ResourceAttachBacking NOT IMPLEMENTED");
-                Ok(OkNoData)
-            }
-            // GpuCommand::ResourceAttachBacking(info) => {
-            //     let available_bytes = reader.available_bytes();
-            //     if available_bytes != 0 {
-            //         let entry_count = info.nr_entries as usize;
-            //         let mut vecs = Vec::with_capacity(entry_count);
-            //         for _ in 0..entry_count {
-            //             match reader.read_obj::<virtio_gpu_mem_entry>(desc_addr) {
-            //                 Ok(entry) => {
-            //                     let addr = GuestAddress(entry.addr);
-            //                     let len = entry.length as usize;
-            //                     vecs.push((addr, len))
-            //                 }
-            //                 Err(_) => return Err(GpuResponse::ErrUnspec),
-            //             }
-            //         }
-            //         virtio_gpu.attach_backing(info.resource_id, mem, vecs)
-            //     } else {
-            //         error!("missing data for command {:?}", cmd);
-            //         Err(GpuResponse::ErrUnspec)
-            //     }
-            // }
+            GpuCommand::ResourceAttachBacking(info, iovecs) => virtio_gpu.attach_backing(
+                info.resource_id,
+                &*self.mem.as_ref().unwrap().memory(),
+                iovecs,
+            ),
             GpuCommand::ResourceDetachBacking(info) => virtio_gpu.detach_backing(info.resource_id),
             GpuCommand::UpdateCursor(_info) => {
                 panic!("virtio_gpu: GpuCommand:UpdateCursor unimplemented");
@@ -299,10 +279,10 @@ impl VhostUserGpuBackend {
 
                 virtio_gpu.transfer_read(ctx_id, resource_id, transfer, None)
             }
-            GpuCommand::CmdSubmit3d(info) => {
+            GpuCommand::CmdSubmit3d(_info) => {
                 todo!()
             }
-            GpuCommand::ResourceCreateBlob(info) => {
+            GpuCommand::ResourceCreateBlob(_info) => {
                 todo!()
             }
             // GpuCommand::CmdSubmit3d(info) => {
@@ -394,28 +374,29 @@ impl VhostUserGpuBackend {
         writer: &mut Writer,
         signal_used_queue: &mut bool,
     ) -> Result<()> {
-        let mut response = Err(ErrUnspec);
+        let mut response = ErrUnspec;
 
-        let (ctrl_hdr, gpu_cmd) = match GpuCommand::decode(reader) {
-            Ok((ctrl_hdr, ctrl_cmd)) => {
-                response = self.process_gpu_command(virtio_gpu, ctrl_hdr, ctrl_cmd);
-                (Some(ctrl_hdr), Some(ctrl_cmd))
+        let ctrl_hdr = match GpuCommand::decode(reader) {
+            Ok((ctrl_hdr, gpu_cmd)) => {
+                // TODO: consider having a method that return &'static str for logging purpose
+                let cmd_name = format!("{:?}", gpu_cmd);
+                let response_result = self.process_gpu_command(virtio_gpu, ctrl_hdr, gpu_cmd);
+                // Unwrap the response from inside Result and log information
+                response = match response_result {
+                    Ok(response) => {
+                        trace!("GpuCommand {cmd_name} success: {response:?}");
+                        response
+                    }
+                    Err(response) => {
+                        debug!("GpuCommand {cmd_name} failed: {response:?}");
+                        response
+                    }
+                };
+                Some(ctrl_hdr)
             }
             Err(e) => {
                 warn!("Failed to decode GpuCommand: {e}");
-                (None, None)
-            }
-        };
-
-        // Unwrap the response from inside Result and log information
-        let mut response = match response {
-            Ok(response) => {
-                trace!("GpuCommand {gpu_cmd:?} success: {response:?}");
-                response
-            }
-            Err(response) => {
-                debug!("GpuCommand {gpu_cmd:?} failed: {response:?}");
-                response
+                None
             }
         };
 
