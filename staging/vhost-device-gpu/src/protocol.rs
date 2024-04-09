@@ -19,7 +19,7 @@ use crate::vhu_gpu::{self, Error};
 use rutabaga_gfx::RutabagaError;
 use thiserror::Error;
 use virtio_queue::{Reader, Writer};
-use vm_memory::ByteValued;
+use vm_memory::{ByteValued, GuestAddress};
 use zerocopy::{AsBytes, FromBytes};
 
 //use super::super::descriptor_utils::{Reader, Writer};
@@ -570,7 +570,7 @@ pub const VIRTIO_GPU_FORMAT_A8B8G8R8_UNORM: u32 = 121;
 pub const VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM: u32 = 134;
 
 /// A virtio gpu command and associated metadata specific to each command.
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub enum GpuCommand {
     GetDisplayInfo,
     GetEdid(virtio_gpu_get_edid),
@@ -580,7 +580,10 @@ pub enum GpuCommand {
     SetScanoutBlob(virtio_gpu_set_scanout_blob),
     ResourceFlush(virtio_gpu_resource_flush),
     TransferToHost2d(virtio_gpu_transfer_to_host_2d),
-    ResourceAttachBacking(virtio_gpu_resource_attach_backing),
+    ResourceAttachBacking(
+        virtio_gpu_resource_attach_backing,
+        Vec<(GuestAddress, usize)>,
+    ),
     ResourceDetachBacking(virtio_gpu_resource_detach_backing),
     GetCapsetInfo(virtio_gpu_get_capset_info),
     GetCapset(virtio_gpu_get_capset),
@@ -644,7 +647,7 @@ impl fmt::Debug for GpuCommand {
             SetScanoutBlob(_info) => f.debug_struct("SetScanoutBlob").finish(),
             ResourceFlush(_info) => f.debug_struct("ResourceFlush").finish(),
             TransferToHost2d(_info) => f.debug_struct("TransferToHost2d").finish(),
-            ResourceAttachBacking(_info) => f.debug_struct("ResourceAttachBacking").finish(),
+            ResourceAttachBacking(_info, _vecs) => f.debug_struct("ResourceAttachBacking").finish(),
             ResourceDetachBacking(_info) => f.debug_struct("ResourceDetachBacking").finish(),
             GetCapsetInfo(_info) => f.debug_struct("GetCapsetInfo").finish(),
             GetCapset(_info) => f.debug_struct("GetCapset").finish(),
@@ -700,7 +703,15 @@ impl GpuCommand {
                 TransferToHost2d(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
             }
             VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING => {
-                ResourceAttachBacking(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+                let info: virtio_gpu_resource_attach_backing =
+                    reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?;
+                let mut entries = Vec::with_capacity(info.nr_entries as usize);
+                for _ in 0..info.nr_entries {
+                    let entry: virtio_gpu_mem_entry =
+                        reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?;
+                    entries.push((GuestAddress(entry.addr), entry.length as usize))
+                }
+                ResourceAttachBacking(info, entries)
             }
             VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING => {
                 ResourceDetachBacking(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
