@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::env;
+use std::io::{IoSlice, Write};
 use std::num::NonZeroU32;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -17,21 +18,18 @@ use rutabaga_gfx::{
     RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
 };
 //use utils::eventfd::EventFd;
-use vhost::vhost_user::gpu_message::{
-    VhostUserGpuEdidRequest, VhostUserGpuScanout, VirtioGpuRespDisplayInfo,
-};
+use vhost::vhost_user::gpu_message::{VhostUserGpuEdidRequest, VhostUserGpuScanout, VhostUserGpuUpdate, VirtioGpuRespDisplayInfo};
 use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
-use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
+use vm_memory::{Bytes, GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 
 //use super::super::Queue as VirtQueue;
 use super::protocol::GpuResponse::*;
-use super::protocol::{
-    GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE,
-    VIRTIO_GPU_BLOB_MEM_HOST3D,
-};
+use super::protocol::{GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, VIRTIO_GPU_BLOB_MEM_HOST3D, virtio_gpu_rect};
 use crate::protocol::{virtio_gpu_set_scanout, VIRTIO_GPU_FLAG_INFO_RING_IDX};
 use std::result::Result;
 use vhost::vhost_user::GpuBackend;
+use vhost::vhost_user::message::VhostUserMemory;
+use virtio_queue::Reader;
 
 fn sglist_to_rutabaga_iovecs(
     vecs: &[(GuestAddress, usize)],
@@ -87,6 +85,13 @@ struct VirtioGpuResource {
     shmem_offset: Option<u64>,
     rutabaga_external_mapping: bool,
     scanout_data: Option<VirtioScanoutBlobData>,
+    scanout_id: u32,
+
+    // TODO: move these fields somewhere sensible
+    scanout_width: u32,
+    scanout_height: u32,
+
+    backing_iovecs: Option<Vec<(GuestAddress, usize)>>,
 }
 
 impl VirtioGpuResource {
@@ -97,7 +102,11 @@ impl VirtioGpuResource {
             size,
             shmem_offset: None,
             rutabaga_external_mapping: false,
+            scanout_id: 0,
+            scanout_width: 0,
+            scanout_height: 0,
             scanout_data: None,
+            backing_iovecs: None,
         }
     }
 }
@@ -289,9 +298,10 @@ impl VirtioGpu {
         gpu_backend: &mut GpuBackend,
         gpu_scanout: VhostUserGpuScanout,
         resource_id: u32,
+        rect: &virtio_gpu_rect,
         scanout_data: Option<VirtioScanoutBlobData>,
     ) -> VirtioGpuResult {
-        self.update_scanout_resource(gpu_backend, gpu_scanout, resource_id, scanout_data)
+        self.update_scanout_resource(gpu_backend, gpu_scanout, resource_id, rect, scanout_data)
     }
 
     /// Creates a 3D resource with the given properties and resource_id.
@@ -331,16 +341,36 @@ impl VirtioGpu {
     }
 
     /// If the resource is the scanout resource, flush it to the display.
-    pub fn flush_resource(&mut self, resource_id: u32) -> VirtioGpuResult {
+    pub fn flush_resource(&mut self, resource_id: u32, gpu_backend: &mut GpuBackend, mem: &GuestMemoryMmap) -> VirtioGpuResult {
         if resource_id == 0 {
             return Ok(OkNoData);
         }
 
-        #[cfg(windows)]
-        match self.rutabaga.resource_flush(resource_id) {
-            Ok(_) => return Ok(OkNoData),
-            Err(RutabagaError::Unsupported) => {}
-            Err(e) => return Err(ErrRutabaga(e)),
+        let resource = self.resources.get(&resource_id).unwrap();
+        if resource.scanout_width != 0 && resource.scanout_height != 0 {
+            debug!("flush resource with associated scanout: {}x{}",resource.scanout_width, resource.scanout_height);
+            // lets assume hardcoded XRGB
+            const BYTES_PER_PIXEL: usize = 4;
+            let size = BYTES_PER_PIXEL * resource.scanout_width as usize * resource.scanout_height as usize;
+            let mut data = vec![0u8; size];
+            let mut pos = 0;
+            for (addr, len) in resource.backing_iovecs.as_ref().unwrap().iter().copied() {
+                debug!("iovec: {}..{}", pos, pos+ len);
+                let bytes_read = mem.read(&mut data[pos..pos+len], addr).unwrap();
+                assert_eq!(bytes_read, len);
+                pos += bytes_read;
+            }
+            assert_eq!(pos, size);
+            debug!("!!!! Scanout total len: {}", size);
+            gpu_backend.update_scanout(&VhostUserGpuUpdate {
+                scanout_id: resource.scanout_id,
+                x: 0,
+                y: 0,
+                width: resource.scanout_width,
+                height: resource.scanout_height,
+            }, &data[..]).unwrap();
+        } else {
+            debug!("flush resource without associated scanout");
         }
 
         Ok(OkNoData)
@@ -382,6 +412,12 @@ impl VirtioGpu {
         mem: &GuestMemoryMmap,
         vecs: Vec<(GuestAddress, usize)>,
     ) -> VirtioGpuResult {
+        let resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+        resource.backing_iovecs = Some(vecs.clone());
+
         let rutabaga_iovecs = sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?;
         self.rutabaga.attach_backing(resource_id, rutabaga_iovecs)?;
         Ok(OkNoData)
@@ -631,26 +667,33 @@ impl VirtioGpu {
         gpu_backend: &mut GpuBackend,
         gpu_scanout: VhostUserGpuScanout,
         resource_id: u32,
+        rect: &virtio_gpu_rect,
         scanout_data: Option<VirtioScanoutBlobData>,
     ) -> VirtioGpuResult {
         gpu_backend.set_scanout(&gpu_scanout).map_err(|e| {
             error!("Failed to set scanout from frontend: {}", e);
             ErrUnspec
         })?;
-
-        // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
-        if resource_id == 0 {
-            error!("NOT IMPLEMENTED: disable scanout");
-            return Ok(OkNoData);
-        }
-
         let resource = self
             .resources
             .get_mut(&resource_id)
             .ok_or(ErrInvalidResourceId)?;
 
-        resource.scanout_data = scanout_data;
 
+        // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
+        if resource_id == 0 {
+            resource.scanout_width = 0;
+            resource.scanout_height = 0;
+            return Ok(OkNoData);
+        }
+
+        resource.scanout_id = gpu_scanout.scanout_id;
+        assert_eq!(rect.x, 0, "non zero offset not implemented");
+        assert_eq!(rect.y, 0, "non zero offset not implemented");
+        resource.scanout_width = rect.width;
+        resource.scanout_height = rect.height;
+
+        resource.scanout_data = scanout_data;
         //todo:
         //create a display surface
 
