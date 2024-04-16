@@ -364,7 +364,7 @@ impl VhostUserGpuBackend {
         }
     }
 
-    fn process_control_queue_chain(
+    fn process_queue_chain(
         &mut self,
         virtio_gpu: &mut VirtioGpu,
         mem: &GuestMemoryMmap,
@@ -459,7 +459,7 @@ impl VhostUserGpuBackend {
     }
 
     /// Process the requests in the vring and dispatch replies
-    fn process_control_queue(
+    fn process_queue(
         &mut self,
         virtio_gpu: &mut VirtioGpu,
         vring: &VringRwLock,
@@ -481,7 +481,7 @@ impl VhostUserGpuBackend {
                 .map_err(Error::CreateReader)?;
             let mut writer = desc_chain.writer(&mem).map_err(Error::CreateWriter)?;
 
-            self.process_control_queue_chain(
+            self.process_queue_chain(
                 virtio_gpu,
                 &*mem,
                 vring,
@@ -503,27 +503,37 @@ impl VhostUserGpuBackend {
         Ok(())
     }
 
-    fn handle_control_queue_event(
+    fn handle_queue_event(
         &mut self,
+        device_event: u16,
         virtio_gpu: &mut VirtioGpu,
         vring: &VringRwLock,
     ) -> IoResult<()> {
-        if self.event_idx {
-            // vm-virtio's Queue implementation only checks avail_index
-            // once, so to properly support EVENT_IDX we need to keep
-            // calling process_queue() until it stops finding new
-            // requests on the queue.
-            loop {
-                vring.disable_notification().unwrap();
-                self.process_control_queue(virtio_gpu, vring)?;
-                if !vring.enable_notification().unwrap() {
-                    break;
+        match device_event {
+            CONTROL_QUEUE | CURSOR_QUEUE => {
+                if self.event_idx {
+                    // vm-virtio's Queue implementation only checks avail_index
+                    // once, so to properly support EVENT_IDX we need to keep
+                    // calling process_queue() until it stops finding new
+                    // requests on the queue.
+                    loop {
+                        vring.disable_notification().unwrap();
+                        self.process_queue(virtio_gpu, vring)?;
+                        if !vring.enable_notification().unwrap() {
+                            break;
+                        }
+                    }
+                } else {
+                    // Without EVENT_IDX, a single call is enough.
+                    self.process_queue(virtio_gpu, vring)?;
                 }
             }
-        } else {
-            // Without EVENT_IDX, a single call is enough.
-            self.process_control_queue(virtio_gpu, vring)?;
+            _ => {
+                warn!("unhandled device_event: {}", device_event);
+                return Err(Error::HandleEventUnknown.into());
+            }
         }
+
         Ok(())
     }
 }
@@ -588,32 +598,19 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
         if evset != EventSet::IN {
             return Err(Error::HandleEventNotEpollIn.into());
         };
-
-        match device_event {
-            CONTROL_QUEUE => {
-                let vring = &vrings
-                    .get(device_event as usize)
-                    .ok_or_else(|| Error::HandleEventUnknown)?;
-
-                VIRTIO_GPU_REF.with_borrow_mut(|maybe_virtio_gpu| {
-                    // Lazy initializes the virtio_gpu
-                    let virtio_gpu = maybe_virtio_gpu.get_or_insert_with(|| {
-                        // VirtioGpu::new can be called once per process (otherwise it panics),
-                        // so if somehow another thread accidentally wants to create another gpu here,
-                        // it will panic anyway
-                        VirtioGpu::new(vring)
-                    });
-                    self.handle_control_queue_event(virtio_gpu, vring)
-                })?;
-            }
-            CURSOR_QUEUE => {
-                error!("NOT IMPLEMENTED: handle_event on CURSOR_QUEUE");
-            }
-            _ => {
-                warn!("unhandled device_event: {}", device_event);
-                return Err(Error::HandleEventUnknown.into());
-            }
-        }
+        let vring = &vrings
+            .get(device_event as usize)
+            .ok_or_else(|| Error::HandleEventUnknown)?;
+        VIRTIO_GPU_REF.with_borrow_mut(|maybe_virtio_gpu| {
+            // Lazy initializes the virtio_gpu
+            let virtio_gpu = maybe_virtio_gpu.get_or_insert_with(|| {
+                // VirtioGpu::new can be called once per process (otherwise it panics),
+                // so if somehow another thread accidentally wants to create another gpu here,
+                // it will panic anyway
+                VirtioGpu::new(vring)
+            });
+            self.handle_queue_event(device_event, virtio_gpu, vring)
+        })?;
         Ok(())
     }
 
@@ -821,7 +818,7 @@ mod tests {
         // Single valid descriptor
         let mut buf: Vec<u8> = vec![0; 30];
         let (mut backend, vring) = prepare_desc_chain(&mut buf);
-        backend.process_control_queue(&vring).unwrap();
+        backend.process_queue(&vring).unwrap();
     }
 
     #[test]
