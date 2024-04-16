@@ -278,10 +278,10 @@ impl VhostUserGpuBackend {
 
                 virtio_gpu.transfer_read(ctx_id, resource_id, transfer, None)
             }
-            GpuCommand::CmdSubmit3d(info) => {
+            GpuCommand::CmdSubmit3d(_info) => {
                 todo!()
             }
-            GpuCommand::ResourceCreateBlob(info) => {
+            GpuCommand::ResourceCreateBlob(_info) => {
                 todo!()
             }
             // GpuCommand::CmdSubmit3d(info) => {
