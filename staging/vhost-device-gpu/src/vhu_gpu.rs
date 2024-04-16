@@ -464,7 +464,7 @@ impl VhostUserGpuBackend {
         virtio_gpu: &mut VirtioGpu,
         vring: &VringRwLock,
     ) -> Result<()> {
-        let mem = self.mem.as_mut().unwrap().memory().into_inner();
+        let mem = self.mem.as_ref().unwrap().memory().into_inner();
         let desc_chains: Vec<_> = vring
             .get_mut()
             .get_queue_mut()
