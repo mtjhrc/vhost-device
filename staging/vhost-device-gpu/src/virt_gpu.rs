@@ -18,7 +18,8 @@ use rutabaga_gfx::{
 };
 //use utils::eventfd::EventFd;
 use vhost::vhost_user::gpu_message::{
-    VhostUserGpuEdidRequest, VhostUserGpuScanout, VirtioGpuRespDisplayInfo,
+    VhostUserGpuCursorPos, VhostUserGpuEdidRequest, VhostUserGpuScanout,
+    VhostUserGpuUpdate, VirtioGpuRespDisplayInfo,
 };
 use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
@@ -390,6 +391,28 @@ impl VirtioGpu {
     /// Detaches any previously attached iovecs from the resource.
     pub fn detach_backing(&mut self, resource_id: u32) -> VirtioGpuResult {
         self.rutabaga.detach_backing(resource_id)?;
+        Ok(OkNoData)
+    }
+
+    /// Moves the cursor's position to the given coordinates.
+    pub fn move_cursor(
+        &mut self,
+        resource_id: u32,
+        gpu_backend: &mut GpuBackend,
+        cursor: VhostUserGpuCursorPos,
+    ) -> VirtioGpuResult {
+        if resource_id == 0 {
+            gpu_backend.cursor_pos_hide(&cursor).map_err(|e| {
+                error!("Failed to set cursor pos from frontend: {}", e);
+                ErrUnspec
+            })?;
+        } else {
+            gpu_backend.cursor_pos(&cursor).map_err(|e| {
+                error!("Failed to set cursor pos from frontend: {}", e);
+                ErrUnspec
+            })?;
+        }
+
         Ok(OkNoData)
     }
 
