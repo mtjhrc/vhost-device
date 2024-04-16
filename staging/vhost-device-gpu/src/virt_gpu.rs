@@ -48,6 +48,7 @@ fn sglist_to_rutabaga_iovecs(
     for &(addr, len) in vecs {
         let slice = mem.get_slice(addr, len).unwrap();
         rutabaga_iovecs.push(RutabagaIovec {
+            // TODO: investigate the deprecated method, and it's replacement
             base: slice.as_ptr() as *mut c_void,
             len,
         });
