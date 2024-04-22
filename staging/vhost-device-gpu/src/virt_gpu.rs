@@ -18,7 +18,7 @@ use rutabaga_gfx::{
 };
 //use utils::eventfd::EventFd;
 use vhost::vhost_user::gpu_message::{
-    VhostUserGpuCursorPos, VhostUserGpuEdidRequest, VhostUserGpuScanout,
+    VhostUserGpuCursorPos, VhostUserGpuCursorUpdate, VhostUserGpuEdidRequest, VhostUserGpuScanout,
     VhostUserGpuUpdate, VirtioGpuRespDisplayInfo,
 };
 use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
@@ -391,6 +391,37 @@ impl VirtioGpu {
     /// Detaches any previously attached iovecs from the resource.
     pub fn detach_backing(&mut self, resource_id: u32) -> VirtioGpuResult {
         self.rutabaga.detach_backing(resource_id)?;
+        Ok(OkNoData)
+    }
+
+    /// Updates the cursor's memory to the given resource_id, and sets its position to the given
+    /// coordinates.
+    pub fn update_cursor(
+        &mut self,
+        _resource_id: u32,
+        gpu_backend: &mut GpuBackend,
+        cursor_pos: VhostUserGpuCursorPos,
+        hot_x: u32,
+        hot_y: u32,
+        _mem: &GuestMemoryMmap,
+    ) -> VirtioGpuResult {
+        let size: usize = 4096;
+        //TODO: copy data associated with the resource_id
+        let data = vec![0u32; size];
+        let mut data_array = [0u32; 4096];
+        data_array.copy_from_slice(&data[..]);
+        let cursor_update: VhostUserGpuCursorUpdate = VhostUserGpuCursorUpdate {
+            pos: cursor_pos,
+            hot_x: hot_x,
+            hot_y: hot_y,
+            data: data_array,
+        };
+        gpu_backend.cursor_update(&cursor_update).map_err(|e| {
+            error!("Failed to update cursor pos from frontend: {}", e);
+            ErrUnspec
+        })?;
+        //TODO: flush resource
+        //self.flush_resource(resource_id, gpu_backend, mem)
         Ok(OkNoData)
     }
 
