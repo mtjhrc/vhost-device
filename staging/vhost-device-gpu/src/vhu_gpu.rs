@@ -194,8 +194,20 @@ impl VhostUserGpuBackend {
                 virtio_gpu.attach_backing(info.resource_id, mem, iovecs)
             }
             GpuCommand::ResourceDetachBacking(info) => virtio_gpu.detach_backing(info.resource_id),
-            GpuCommand::UpdateCursor(_info) => {
-                panic!("virtio_gpu: GpuCommand:UpdateCursor unimplemented");
+            GpuCommand::UpdateCursor(info) => {
+                let cursor_pos: VhostUserGpuCursorPos = VhostUserGpuCursorPos {
+                    scanout_id: info.pos.scanout_id,
+                    x: info.pos.x,
+                    y: info.pos.y,
+                };
+                virtio_gpu.update_cursor(
+                    info.resource_id,
+                    self.gpu_backend.as_mut().unwrap(),
+                    cursor_pos,
+                    info.hot_x,
+                    info.hot_y,
+                    mem,
+                )
             }
             GpuCommand::MoveCursor(info) => {
                 let cursor: VhostUserGpuCursorPos = VhostUserGpuCursorPos {
