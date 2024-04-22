@@ -13,7 +13,7 @@ use std::{
 
 use thiserror::Error as ThisError;
 use vhost::vhost_user::gpu_message::{
-    VhostUserGpuEdidRequest, VhostUserGpuScanout, VirtioGpuRespDisplayInfo,
+    VhostUserGpuCursorPos, VhostUserGpuEdidRequest, VhostUserGpuScanout, VirtioGpuRespDisplayInfo,
 };
 use vhost::vhost_user::message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures};
 use vhost::vhost_user::GpuBackend;
@@ -194,11 +194,28 @@ impl VhostUserGpuBackend {
                 virtio_gpu.attach_backing(info.resource_id, mem, iovecs)
             }
             GpuCommand::ResourceDetachBacking(info) => virtio_gpu.detach_backing(info.resource_id),
-            GpuCommand::UpdateCursor(_info) => {
-                panic!("virtio_gpu: GpuCommand:UpdateCursor unimplemented");
+            GpuCommand::UpdateCursor(info) => {
+                let cursor_pos: VhostUserGpuCursorPos = VhostUserGpuCursorPos {
+                    scanout_id: info.pos.scanout_id,
+                    x: info.pos.x,
+                    y: info.pos.y,
+                };
+                virtio_gpu.update_cursor(
+                    info.resource_id,
+                    self.gpu_backend.as_mut().unwrap(),
+                    cursor_pos,
+                    info.hot_x,
+                    info.hot_y,
+                    mem,
+                )
             }
-            GpuCommand::MoveCursor(_info) => {
-                panic!("virtio_gpu: GpuCommand::MoveCursor unimplemented");
+            GpuCommand::MoveCursor(info) => {
+                let cursor: VhostUserGpuCursorPos = VhostUserGpuCursorPos {
+                    scanout_id: info.pos.scanout_id,
+                    x: info.pos.x,
+                    y: info.pos.y,
+                };
+                virtio_gpu.move_cursor(info.resource_id, self.gpu_backend.as_mut().unwrap(), cursor)
             }
             GpuCommand::ResourceAssignUuid(info) => {
                 let resource_id = info.resource_id;
