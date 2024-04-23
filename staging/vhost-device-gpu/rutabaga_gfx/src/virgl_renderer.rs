@@ -6,6 +6,7 @@
 //! External code found at <https://gitlab.freedesktop.org/virgl/virglrenderer/>.
 
 #![cfg(feature = "virgl_renderer")]
+#![allow(clippy::useless_transmute)]
 
 use std::cmp::min;
 use std::convert::TryFrom;

@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#![allow(dead_code)]
 #![allow(non_camel_case_types)]
 
 use log::trace;
@@ -624,13 +623,13 @@ impl From<io::Error> for GpuCommandDecodeError {
 }
 
 impl From<vhu_gpu::Error> for GpuCommandDecodeError {
-    fn from(error: vhu_gpu::Error) -> Self {
+    fn from(_: vhu_gpu::Error) -> Self {
         GpuCommandDecodeError::DescriptorReadFailed
     }
 }
 
 impl From<vhu_gpu::Error> for GpuResponseEncodeError {
-    fn from(error: vhu_gpu::Error) -> Self {
+    fn from(_: vhu_gpu::Error) -> Self {
         GpuResponseEncodeError::DescriptorWriteFailed
     }
 }
@@ -900,7 +899,7 @@ impl GpuResponse {
                     edid: [0; EDID_BLOB_MAX_SIZE],
                     padding: Default::default(),
                 };
-                edid_info.edid.copy_from_slice(&blob);
+                edid_info.edid.copy_from_slice(blob);
                 writer
                     .write_obj(edid_info)
                     .map_err(|_| Error::DescriptorWriteFailed)?;
@@ -952,11 +951,7 @@ impl GpuResponse {
                     strides,
                     offsets,
                 };
-                //if resp.available_bytes() >= size_of_val(&plane_info) {
-                if let Err(err) = writer
-                    .write_obj(plane_info)
-                    .map_err(|_| Error::DescriptorWriteFailed)
-                {
+                if writer.available_bytes() >= size_of_val(&plane_info) {
                     size_of_val(&plane_info)
                 } else {
                     // In case there is too little room in the response slice to store the

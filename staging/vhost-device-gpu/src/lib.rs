@@ -1,4 +1,5 @@
 pub mod protocol;
+#[cfg(test)]
 mod tests;
 pub mod vhu_gpu;
 pub mod virt_gpu;
