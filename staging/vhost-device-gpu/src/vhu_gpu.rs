@@ -32,7 +32,7 @@ use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
 
 use super::protocol::{virtio_gpu_ctrl_hdr, GpuCommand, GpuResponse, VirtioGpuResult};
 use super::virt_gpu::{VirtioGpu, VirtioGpuRing, VirtioShmRegion};
-use crate::protocol::GpuResponse::{ErrUnspec, OkNoData};
+use crate::protocol::GpuResponse::ErrUnspec;
 use crate::protocol::{VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX};
 use crate::{protocol, virtio_gpu::*, GpuConfig};
 use rutabaga_gfx::{
@@ -44,7 +44,7 @@ type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, ThisError)]
 #[allow(dead_code)] //TODO: remove unused variants
-pub(crate) enum Error {
+pub enum Error {
     #[error("Failed to handle event, didn't match EPOLLIN")]
     HandleEventNotEpollIn,
     #[error("Failed to handle unknown event")]
@@ -91,7 +91,7 @@ impl convert::From<Error> for io::Error {
     }
 }
 
-pub(crate) struct VhostUserGpuBackend {
+pub struct VhostUserGpuBackend {
     virtio_cfg: VirtioGpuConfig,
     event_idx: bool,
     gpu_backend: Option<GpuBackend>,
@@ -116,11 +116,6 @@ impl VhostUserGpuBackend {
             mem: None,
             shm_region: None,
         })
-    }
-
-    fn set_shm_region(&mut self, shm_region: VirtioShmRegion) {
-        debug!("virtio_gpu: set_shm_region");
-        self.shm_region = Some(shm_region);
     }
 
     fn process_gpu_command(
@@ -371,12 +366,12 @@ impl VhostUserGpuBackend {
                 let resource_id = info.resource_id;
                 let offset = info.offset;
                 let sregion = self.shm_region.as_ref().unwrap();
-                virtio_gpu.resource_map_blob(resource_id, &sregion, offset)
+                virtio_gpu.resource_map_blob(resource_id, sregion, offset)
             }
             GpuCommand::ResourceUnmapBlob(info) => {
                 let resource_id = info.resource_id;
                 let sregion = self.shm_region.as_ref().unwrap();
-                virtio_gpu.resource_unmap_blob(resource_id, &sregion)
+                virtio_gpu.resource_unmap_blob(resource_id, sregion)
             }
         }
     }
@@ -476,11 +471,7 @@ impl VhostUserGpuBackend {
     }
 
     /// Process the requests in the vring and dispatch replies
-    fn process_queue(
-        &mut self,
-        virtio_gpu: &mut VirtioGpu,
-        vring: &VringRwLock,
-    ) -> Result<()> {
+    fn process_queue(&mut self, virtio_gpu: &mut VirtioGpu, vring: &VringRwLock) -> Result<()> {
         let mem = self.mem.as_ref().unwrap().memory().into_inner();
         let desc_chains: Vec<_> = vring
             .get_mut()
@@ -500,7 +491,7 @@ impl VhostUserGpuBackend {
 
             self.process_queue_chain(
                 virtio_gpu,
-                &*mem,
+                &mem,
                 vring,
                 head_index,
                 &mut reader,
