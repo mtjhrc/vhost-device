@@ -3,7 +3,6 @@ use std::env;
 use std::num::NonZeroU32;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::vhu_gpu::Error;
@@ -19,9 +18,9 @@ use rutabaga_gfx::{
 //use utils::eventfd::EventFd;
 use vhost::vhost_user::gpu_message::{
     VhostUserGpuCursorPos, VhostUserGpuCursorUpdate, VhostUserGpuEdidRequest, VhostUserGpuScanout,
-    VhostUserGpuUpdate, VirtioGpuRespDisplayInfo,
+    VirtioGpuRespDisplayInfo,
 };
-use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
+use vhost_user_backend::{VringRwLock, VringT};
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 
 //use super::super::Queue as VirtQueue;
@@ -30,7 +29,7 @@ use super::protocol::{
     GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE,
     VIRTIO_GPU_BLOB_MEM_HOST3D,
 };
-use crate::protocol::{virtio_gpu_set_scanout, VIRTIO_GPU_FLAG_INFO_RING_IDX};
+use crate::protocol::VIRTIO_GPU_FLAG_INFO_RING_IDX;
 use std::result::Result;
 use vhost::vhost_user::GpuBackend;
 
@@ -49,8 +48,7 @@ fn sglist_to_rutabaga_iovecs(
     for &(addr, len) in vecs {
         let slice = mem.get_slice(addr, len).unwrap();
         rutabaga_iovecs.push(RutabagaIovec {
-            // TODO: investigate the deprecated method, and it's replacement
-            base: slice.as_ptr() as *mut c_void,
+            base: slice.ptr_guard_mut().as_ptr() as *mut c_void,
             len,
         });
     }
@@ -256,13 +254,7 @@ impl VirtioGpu {
         display_info
             .pmodes
             .iter()
-            .map(|display| {
-                (
-                    display.r.width.into(),
-                    display.r.height.into(),
-                    display.enabled == 1,
-                )
-            })
+            .map(|display| (display.r.width, display.r.height, display.enabled == 1))
             .collect::<Vec<_>>()
     }
 
@@ -412,8 +404,8 @@ impl VirtioGpu {
         data_array.copy_from_slice(&data[..]);
         let cursor_update: VhostUserGpuCursorUpdate = VhostUserGpuCursorUpdate {
             pos: cursor_pos,
-            hot_x: hot_x,
-            hot_y: hot_y,
+            hot_x,
+            hot_y,
             data: data_array,
         };
         gpu_backend.cursor_update(&cursor_update).map_err(|e| {

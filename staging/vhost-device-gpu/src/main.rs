@@ -3,24 +3,18 @@
 //
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
-pub mod protocol;
-pub mod vhu_gpu;
-pub mod virt_gpu;
-pub mod virtio_gpu;
-
 use log::{error, info};
 use std::path::PathBuf;
 use std::process::exit;
 use std::sync::{Arc, RwLock};
-use std::thread::{spawn, JoinHandle};
 
 use clap::Parser;
 use thiserror::Error as ThisError;
 use vhost_user_backend::VhostUserDaemon;
 use vm_memory::{GuestMemoryAtomic, GuestMemoryMmap};
 
-use crate::vhu_gpu::VhostUserGpuBackend;
-//use vhu_gpu::VhostUserGpuBackend;
+use vhost_device_gpu::vhu_gpu;
+use vhost_device_gpu::vhu_gpu::VhostUserGpuBackend;
 use vhost_device_gpu::GpuConfig;
 
 type Result<T> = std::result::Result<T, Error>;
