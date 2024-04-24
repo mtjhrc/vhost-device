@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::vhu_gpu::Error;
-use crate::virtio_gpu::VirtioScanoutBlobData;
 use libc::c_void;
 use log::{debug, error};
 use rutabaga_gfx::{
@@ -57,14 +56,6 @@ fn sglist_to_rutabaga_iovecs(
 
 pub trait VirtioGpu {
     const MAX_NUMBER_OF_CAPSETS: u32;
-
-    fn update_scanout_resource(
-        &mut self,
-        gpu_backend: &mut GpuBackend,
-        gpu_scanout: VhostUserGpuScanout,
-        resource_id: u32,
-        scanout_data: Option<VirtioScanoutBlobData>,
-    ) -> VirtioGpuResult;
 
     /// Uses the hypervisor to unmap the blob resource.
     fn resource_unmap_blob(
@@ -143,7 +134,6 @@ pub trait VirtioGpu {
         gpu_backend: &mut GpuBackend,
         gpu_scanout: VhostUserGpuScanout,
         resource_id: u32,
-        scanout_data: Option<VirtioScanoutBlobData>,
     ) -> VirtioGpuResult;
 
     /// Creates a 3D resource with the given properties and resource_id.
@@ -262,7 +252,6 @@ pub struct VirtioGpuResource {
     pub size: u64,
     pub shmem_offset: Option<u64>,
     pub rutabaga_external_mapping: bool,
-    pub scanout_data: Option<VirtioScanoutBlobData>,
 }
 
 impl VirtioGpuResource {
@@ -273,7 +262,6 @@ impl VirtioGpuResource {
             size,
             shmem_offset: None,
             rutabaga_external_mapping: false,
-            scanout_data: None,
         }
     }
 }
@@ -459,9 +447,36 @@ impl VirtioGpu for RutabagaVirtioGpu {
         gpu_backend: &mut GpuBackend,
         gpu_scanout: VhostUserGpuScanout,
         resource_id: u32,
-        scanout_data: Option<VirtioScanoutBlobData>,
     ) -> VirtioGpuResult {
-        self.update_scanout_resource(gpu_backend, gpu_scanout, resource_id, scanout_data)
+        gpu_backend.set_scanout(&gpu_scanout).map_err(|e| {
+            error!("Failed to set scanout from frontend: {}", e);
+            ErrUnspec
+        })?;
+
+        // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
+        if resource_id == 0 {
+            error!("NOT IMPLEMENTED: disable scanout");
+            return Ok(OkNoData);
+        }
+
+        let _resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        //todo:
+        //create a display surface
+
+        // `resource_id` has already been verified to be non-zero
+        let resource_id = match NonZeroU32::new(resource_id) {
+            Some(id) => id,
+            None => return Ok(OkNoData),
+        };
+        //todo:
+        //store resource_id in a struct that will be used later
+        debug!("resource id: {:?}", resource_id);
+
+        Ok(OkNoData)
     }
 
     fn resource_create_3d(
@@ -811,46 +826,6 @@ impl VirtioGpu for RutabagaVirtioGpu {
         }
 
         resource.shmem_offset = None;
-
-        Ok(OkNoData)
-    }
-
-    fn update_scanout_resource(
-        &mut self,
-        gpu_backend: &mut GpuBackend,
-        gpu_scanout: VhostUserGpuScanout,
-        resource_id: u32,
-        scanout_data: Option<VirtioScanoutBlobData>,
-    ) -> VirtioGpuResult {
-        gpu_backend.set_scanout(&gpu_scanout).map_err(|e| {
-            error!("Failed to set scanout from frontend: {}", e);
-            ErrUnspec
-        })?;
-
-        // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
-        if resource_id == 0 {
-            error!("NOT IMPLEMENTED: disable scanout");
-            return Ok(OkNoData);
-        }
-
-        let resource = self
-            .resources
-            .get_mut(&resource_id)
-            .ok_or(ErrInvalidResourceId)?;
-
-        resource.scanout_data = scanout_data;
-
-        //todo:
-        //create a display surface
-
-        // `resource_id` has already been verified to be non-zero
-        let resource_id = match NonZeroU32::new(resource_id) {
-            Some(id) => id,
-            None => return Ok(OkNoData),
-        };
-        //todo:
-        //store resource_id in a struct that will be used later
-        debug!("resource id: {:?}", resource_id);
 
         Ok(OkNoData)
     }
