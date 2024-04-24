@@ -176,7 +176,6 @@ impl VhostUserGpuBackend {
                     self.gpu_backend.as_mut().unwrap(),
                     gpu_scanout,
                     info.resource_id,
-                    None,
                 )
             }
             GpuCommand::ResourceFlush(info) => virtio_gpu.flush_resource(info.resource_id),
