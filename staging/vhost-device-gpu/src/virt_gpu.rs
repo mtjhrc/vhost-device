@@ -6,7 +6,6 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::vhu_gpu::Error;
-use crate::virtio_gpu::VirtioScanoutBlobData;
 use libc::c_void;
 use log::{debug, error};
 use rutabaga_gfx::{
@@ -85,7 +84,6 @@ struct VirtioGpuResource {
     size: u64,
     shmem_offset: Option<u64>,
     rutabaga_external_mapping: bool,
-    scanout_data: Option<VirtioScanoutBlobData>,
 }
 
 impl VirtioGpuResource {
@@ -96,7 +94,6 @@ impl VirtioGpuResource {
             size,
             shmem_offset: None,
             rutabaga_external_mapping: false,
-            scanout_data: None,
         }
     }
 }
@@ -282,9 +279,36 @@ impl VirtioGpu {
         gpu_backend: &mut GpuBackend,
         gpu_scanout: VhostUserGpuScanout,
         resource_id: u32,
-        scanout_data: Option<VirtioScanoutBlobData>,
     ) -> VirtioGpuResult {
-        self.update_scanout_resource(gpu_backend, gpu_scanout, resource_id, scanout_data)
+        gpu_backend.set_scanout(&gpu_scanout).map_err(|e| {
+            error!("Failed to set scanout from frontend: {}", e);
+            ErrUnspec
+        })?;
+
+        // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
+        if resource_id == 0 {
+            error!("NOT IMPLEMENTED: disable scanout");
+            return Ok(OkNoData);
+        }
+
+        let _resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        //todo:
+        //create a display surface
+
+        // `resource_id` has already been verified to be non-zero
+        let resource_id = match NonZeroU32::new(resource_id) {
+            Some(id) => id,
+            None => return Ok(OkNoData),
+        };
+        //todo:
+        //store resource_id in a struct that will be used later
+        debug!("resource id: {:?}", resource_id);
+
+        Ok(OkNoData)
     }
 
     /// Creates a 3D resource with the given properties and resource_id.
@@ -669,45 +693,6 @@ impl VirtioGpu {
         }
 
         resource.shmem_offset = None;
-
-        Ok(OkNoData)
-    }
-    fn update_scanout_resource(
-        &mut self,
-        gpu_backend: &mut GpuBackend,
-        gpu_scanout: VhostUserGpuScanout,
-        resource_id: u32,
-        scanout_data: Option<VirtioScanoutBlobData>,
-    ) -> VirtioGpuResult {
-        gpu_backend.set_scanout(&gpu_scanout).map_err(|e| {
-            error!("Failed to set scanout from frontend: {}", e);
-            ErrUnspec
-        })?;
-
-        // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
-        if resource_id == 0 {
-            error!("NOT IMPLEMENTED: disable scanout");
-            return Ok(OkNoData);
-        }
-
-        let resource = self
-            .resources
-            .get_mut(&resource_id)
-            .ok_or(ErrInvalidResourceId)?;
-
-        resource.scanout_data = scanout_data;
-
-        //todo:
-        //create a display surface
-
-        // `resource_id` has already been verified to be non-zero
-        let resource_id = match NonZeroU32::new(resource_id) {
-            Some(id) => id,
-            None => return Ok(OkNoData),
-        };
-        //todo:
-        //store resource_id in a struct that will be used later
-        debug!("resource id: {:?}", resource_id);
 
         Ok(OkNoData)
     }
