@@ -5,8 +5,10 @@
 //! A crate for handling 2D and 3D virtio-gpu hypercalls, along with graphics
 //! swapchain allocation and mapping.
 
+extern crate core;
+
 mod cross_domain;
-mod generated;
+pub mod generated;
 mod gfxstream;
 mod gfxstream_stub;
 #[macro_use]
@@ -19,7 +21,7 @@ mod rutabaga_gralloc;
 mod rutabaga_os;
 mod rutabaga_snapshot;
 mod rutabaga_utils;
-mod virgl_renderer;
+ mod virgl_renderer;
 
 pub use crate::rutabaga_core::calculate_capset_mask;
 pub use crate::rutabaga_core::calculate_capset_names;

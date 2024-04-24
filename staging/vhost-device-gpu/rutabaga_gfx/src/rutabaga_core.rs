@@ -3,16 +3,21 @@
 // found in the LICENSE file.
 
 //! rutabaga_core: Cross-platform, Rust-based, Wayland and Vulkan centric GPU virtualization.
+use core::panic;
 use std::collections::BTreeMap as Map;
 use std::convert::TryInto;
+use std::dbg;
 use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
 use std::sync::Arc;
+use log::debug;
 
 use crate::cross_domain::CrossDomain;
+use crate::generated::virgl_renderer_bindings::{VIRGL_RENDERER_BLOB_FD_TYPE_DMABUF, virgl_renderer_get_fd_for_texture, virgl_renderer_resource_get_info_ext, virgl_renderer_resource_info_ext};
 #[cfg(feature = "gfxstream")]
 use crate::gfxstream::Gfxstream;
+use crate::renderer_utils::ret_to_res;
 use crate::rutabaga_2d::Rutabaga2D;
 use crate::rutabaga_os::MemoryMapping;
 use crate::rutabaga_os::SafeDescriptor;
@@ -208,6 +213,12 @@ pub trait RutabagaComponent {
     /// Implementations must restore from the specified directory
     fn restore(&self, _directory: &str) -> RutabagaResult<()> {
         Err(RutabagaError::Unsupported)
+    }
+    fn query_qemu(
+        &self,
+        resource_id: u32,
+    ) -> RutabagaResult<virgl_renderer_resource_info_ext> {
+        panic!("not implmeneted");
     }
 }
 
@@ -816,6 +827,15 @@ impl Rutabaga {
             .ok_or(RutabagaError::SpecViolation("no map info available"))
     }
 
+    pub fn query_qemu(&self, resource_id: u32) ->  RutabagaResult<(virgl_renderer_resource_info_ext)> {
+        let component = self
+            .components
+            .get(&RutabagaComponentType::VirglRenderer)
+            .ok_or(RutabagaError::InvalidComponent)?;
+
+        component.query_qemu(resource_id)
+    }
+
     /// Returns the `vulkan_info` of the blob resource, which consists of the physical device
     /// index and memory index associated with the resource.
     pub fn vulkan_info(&self, resource_id: u32) -> RutabagaResult<VulkanInfo> {
@@ -849,9 +869,10 @@ impl Rutabaga {
         // We can inspect blob flags only once guest minigbm is fully transitioned to blob.
         let share_mask = RUTABAGA_BLOB_FLAG_USE_SHAREABLE | RUTABAGA_BLOB_FLAG_USE_CROSS_DEVICE;
         let shareable = (resource.blob_flags & share_mask != 0) || !resource.blob;
-
+        dbg!(share_mask);
+        dbg!(shareable);
         let opt = resource.handle.take();
-
+        dbg!(resource.handle.is_some());
         match (opt, shareable) {
             (Some(handle), true) => {
                 let clone = handle.try_clone()?;

@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::env;
+use std::{env, mem};
 use std::io::{IoSlice, Write};
 use std::num::NonZeroU32;
 use std::os::fd::AsRawFd;
@@ -13,22 +13,29 @@ use libc::c_void;
 use log::{debug, error};
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaChannel,
-    RutabagaFence, RutabagaFenceHandler, RutabagaIovec, Transfer3D, RUTABAGA_CHANNEL_TYPE_WAYLAND,
-    RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_ACCESS_READ, RUTABAGA_MAP_ACCESS_RW,
-    RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
+    RutabagaError, RutabagaFence, RutabagaFenceHandler, RutabagaIovec, Transfer3D,
+    RUTABAGA_CHANNEL_TYPE_WAYLAND, RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_ACCESS_READ,
+    RUTABAGA_MAP_ACCESS_RW, RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK,
+    RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
 };
 //use utils::eventfd::EventFd;
-use vhost::vhost_user::gpu_message::{VhostUserGpuEdidRequest, VhostUserGpuScanout, VhostUserGpuUpdate, VirtioGpuRespDisplayInfo};
+use vhost::vhost_user::gpu_message::{
+    VhostUserGpuDMABUFScanout, VhostUserGpuDMABUFScanout2, VhostUserGpuEdidRequest,
+    VhostUserGpuScanout, VhostUserGpuUpdate, VirtioGpuRespDisplayInfo,
+};
 use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
 use vm_memory::{Bytes, GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 
 //use super::super::Queue as VirtQueue;
 use super::protocol::GpuResponse::*;
-use super::protocol::{GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, VIRTIO_GPU_BLOB_MEM_HOST3D, virtio_gpu_rect};
+use super::protocol::{
+    virtio_gpu_rect, virtio_gpu_resource_flush, GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult,
+    VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, VIRTIO_GPU_BLOB_MEM_HOST3D,
+};
 use crate::protocol::{virtio_gpu_set_scanout, VIRTIO_GPU_FLAG_INFO_RING_IDX};
 use std::result::Result;
-use vhost::vhost_user::GpuBackend;
 use vhost::vhost_user::message::VhostUserMemory;
+use vhost::vhost_user::GpuBackend;
 use virtio_queue::Reader;
 
 fn sglist_to_rutabaga_iovecs(
@@ -296,12 +303,62 @@ impl VirtioGpu {
     pub fn set_scanout(
         &mut self,
         gpu_backend: &mut GpuBackend,
-        gpu_scanout: VhostUserGpuScanout,
-        resource_id: u32,
-        rect: &virtio_gpu_rect,
+        cmd: &virtio_gpu_set_scanout,
         scanout_data: Option<VirtioScanoutBlobData>,
     ) -> VirtioGpuResult {
-        self.update_scanout_resource(gpu_backend, gpu_scanout, resource_id, rect, scanout_data)
+        let resource = self
+            .resources
+            .get_mut(&cmd.resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        let fd;
+        let info;
+        // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
+        if cmd.resource_id == 0 {
+            resource.scanout_width = 0;
+            resource.scanout_height = 0;
+            fd = None;
+            info = Default::default();
+            debug!("TODO: properly disable scanout?");
+        } else {
+            resource.scanout_id = cmd.scanout_id;
+            assert_eq!(cmd.r.x, 0, "non zero offset not implemented");
+            assert_eq!(cmd.r.y, 0, "non zero offset not implemented");
+            resource.scanout_width = cmd.r.width;
+            resource.scanout_height = cmd.r.height;
+            debug!("exporting blob:");
+            let handle = self.rutabaga.export_blob(cmd.resource_id).unwrap();
+            fd = Some(handle.os_handle.as_raw_fd());
+            // lets leak it so it doesn't close our file descriptor!
+            mem::forget(handle);
+            info = self.rutabaga.query_qemu(cmd.resource_id).unwrap();
+        };
+
+        debug!("Dmabuf scanout using fd: {fd:?}");
+        gpu_backend
+            .set_dmabuf_scanout2(
+                {
+                    &VhostUserGpuDMABUFScanout2 {
+                        dmabuf_scanout: VhostUserGpuDMABUFScanout {
+                            scanout_id: cmd.scanout_id,
+                            x: cmd.r.x,
+                            y: cmd.r.y,
+                            width: cmd.r.width,
+                            height: cmd.r.height,
+                            fd_width: info.base.width,
+                            fd_height: info.base.height,
+                            fd_stride: info.base.stride,
+                            fd_flags: info.base.flags,
+                            fd_drm_fourcc: info.base.drm_fourcc as u32,
+                        },
+                        modifier: info.modifiers,
+                    }
+                },
+                fd.as_ref(),
+            )
+            .expect("TODO: dmabuf scanout failed!");
+        //TODO: close the fd here!
+        Ok(OkNoData)
     }
 
     /// Creates a 3D resource with the given properties and resource_id.
@@ -341,12 +398,40 @@ impl VirtioGpu {
     }
 
     /// If the resource is the scanout resource, flush it to the display.
-    pub fn flush_resource(&mut self, resource_id: u32, gpu_backend: &mut GpuBackend, mem: &GuestMemoryMmap) -> VirtioGpuResult {
-        if resource_id == 0 {
+    pub fn flush_resource(
+        &mut self,
+        info: &virtio_gpu_resource_flush,
+        gpu_backend: &mut GpuBackend,
+        mem: &GuestMemoryMmap,
+    ) -> VirtioGpuResult {
+        if info.resource_id == 0 {
             return Ok(OkNoData);
         }
 
+        match self.rutabaga.resource_flush(info.resource_id) {
+            Err(RutabagaError::Unsupported) | Ok(()) => {}
+            Err(e) => return Err(e.into()),
+        }
+
+        let resource = self.resources.get(&info.resource_id).unwrap();
+        if resource.scanout_width != 0 && resource.scanout_height != 0 {
+            gpu_backend
+                .update_dmabuf_scanout(&VhostUserGpuUpdate {
+                    scanout_id: resource.scanout_id,
+                    x: info.r.x,
+                    y: info.r.y,
+                    width: info.r.width,
+                    height: info.r.height,
+                })
+                .unwrap();
+        }
+        /*
         let resource = self.resources.get(&resource_id).unwrap();
+
+        let handle = self.rutabaga.export_blob(resource_id);
+        debug!("managed to export fd: {:?}", handle.map(|handle| handle.os_handle.as_raw_fd()));
+        panic!();
+
         if resource.scanout_width != 0 && resource.scanout_height != 0 {
             debug!("flush resource with associated scanout: {}x{}",resource.scanout_width, resource.scanout_height);
             // lets assume hardcoded XRGB
@@ -372,7 +457,7 @@ impl VirtioGpu {
         } else {
             debug!("flush resource without associated scanout");
         }
-
+        */
         Ok(OkNoData)
     }
 
@@ -659,52 +744,6 @@ impl VirtioGpu {
         }
 
         resource.shmem_offset = None;
-
-        Ok(OkNoData)
-    }
-    fn update_scanout_resource(
-        &mut self,
-        gpu_backend: &mut GpuBackend,
-        gpu_scanout: VhostUserGpuScanout,
-        resource_id: u32,
-        rect: &virtio_gpu_rect,
-        scanout_data: Option<VirtioScanoutBlobData>,
-    ) -> VirtioGpuResult {
-        gpu_backend.set_scanout(&gpu_scanout).map_err(|e| {
-            error!("Failed to set scanout from frontend: {}", e);
-            ErrUnspec
-        })?;
-        let resource = self
-            .resources
-            .get_mut(&resource_id)
-            .ok_or(ErrInvalidResourceId)?;
-
-
-        // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
-        if resource_id == 0 {
-            resource.scanout_width = 0;
-            resource.scanout_height = 0;
-            return Ok(OkNoData);
-        }
-
-        resource.scanout_id = gpu_scanout.scanout_id;
-        assert_eq!(rect.x, 0, "non zero offset not implemented");
-        assert_eq!(rect.y, 0, "non zero offset not implemented");
-        resource.scanout_width = rect.width;
-        resource.scanout_height = rect.height;
-
-        resource.scanout_data = scanout_data;
-        //todo:
-        //create a display surface
-
-        // `resource_id` has already been verified to be non-zero
-        let resource_id = match NonZeroU32::new(resource_id) {
-            Some(id) => id,
-            None => return Ok(OkNoData),
-        };
-        //todo:
-        //store resource_id in a struct that will be used later
-        debug!("resource id: {:?}", resource_id);
 
         Ok(OkNoData)
     }

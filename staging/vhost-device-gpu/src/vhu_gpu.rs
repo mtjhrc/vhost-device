@@ -171,20 +171,13 @@ impl VhostUserGpuBackend {
             GpuCommand::ResourceUnref(info) => virtio_gpu.unref_resource(info.resource_id),
             GpuCommand::SetScanout(info) => {
                 debug!("SetScanout: {info:?}");
-                let gpu_scanout: VhostUserGpuScanout = VhostUserGpuScanout {
-                    scanout_id: info.scanout_id,
-                    width: info.r.width,
-                    height: info.r.height,
-                };
                 virtio_gpu.set_scanout(
                     self.gpu_backend.as_mut().unwrap(),
-                    gpu_scanout,
-                    info.resource_id,
-                    &info.r,
+                    &info,
                     None,
                 )
             }
-            GpuCommand::ResourceFlush(info) => virtio_gpu.flush_resource(info.resource_id, self.gpu_backend.as_mut().unwrap(), &*self.mem.as_ref().unwrap().memory()),
+            GpuCommand::ResourceFlush(info) => virtio_gpu.flush_resource(&info, self.gpu_backend.as_mut().unwrap(), &*self.mem.as_ref().unwrap().memory()),
             GpuCommand::TransferToHost2d(info) => {
                 let resource_id = info.resource_id;
                 let transfer = Transfer3D::new_2d(info.r.x, info.r.y, info.r.width, info.r.height);

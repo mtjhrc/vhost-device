@@ -395,13 +395,37 @@ impl VirglRenderer {
     }
 
     fn export_blob(&self, resource_id: u32) -> RutabagaResult<Arc<RutabagaHandle>> {
-        let mut fd_type = 0;
-        let mut fd = 0;
-        // TODO(b/315870313): Add safety comment
-        #[allow(clippy::undocumented_unsafe_blocks)]
+        let mut fd_type = VIRGL_RENDERER_BLOB_FD_TYPE_DMABUF;
+        //// TODO(b/315870313): Add safety comment
+        //#[allow(clippy::undocumented_unsafe_blocks)]
+        //let ret =
+        //    unsafe { virgl_renderer_resource_export_blob(resource_id, &mut fd_type, &mut fd) };
+        let mut info_ext = Default::default();
         let ret =
-            unsafe { virgl_renderer_resource_export_blob(resource_id, &mut fd_type, &mut fd) };
+            unsafe { virgl_renderer_resource_get_info_ext(resource_id as i32, &mut info_ext) };
         ret_to_res(ret)?;
+        dbg!(info_ext.modifiers);
+
+        let mut fd = -1;
+        dbg!(info_ext.has_dmabuf_export);
+        let ret = unsafe { virgl_renderer_get_fd_for_texture(info_ext.base.tex_id, &mut fd) };
+        ret_to_res(ret)?;
+
+        if fd < 0 {
+            panic!("Invalid fd");
+        }
+
+        /*
+        ret = virgl_get_resource_info_modifiers(ss.resource_id, &info,
+                                                &modifiers);
+        if (ret) {
+            g_critical("%s: illegal resource specified %d\n",
+                       __func__, ss.resource_id);
+            cmd->error = VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID;
+            return;
+        }*/
+
+        //if (virgl_renderer_get_fd_for_texture(info.tex_id, &fd) < 0) {
 
         // SAFETY:
         // Safe because the FD was just returned by a successful virglrenderer
@@ -523,9 +547,15 @@ impl RutabagaComponent for VirglRenderer {
         let ret = unsafe { virgl_renderer_resource_create(&mut args, null_mut(), 0) };
         ret_to_res(ret)?;
 
+        let handle = self.export_blob(resource_id).ok();
+        debug!(
+            "Rutabaga virgl creating resource with handle {:?}",
+            handle.as_ref().map(|h| h.os_handle.as_raw_fd())
+        );
+
         Ok(RutabagaResource {
             resource_id,
-            handle: self.export_blob(resource_id).ok(),
+            handle,
             blob: false,
             blob_mem: 0,
             blob_flags: 0,
@@ -794,5 +824,15 @@ impl RutabagaComponent for VirglRenderer {
         };
         ret_to_res(ret)?;
         Ok(Box::new(VirglRendererContext { ctx_id }))
+    }
+
+    fn query_qemu(&self, resource_id: u32) -> RutabagaResult<virgl_renderer_resource_info_ext> {
+        let mut info_ext = Default::default();
+        let ret =
+            unsafe { virgl_renderer_resource_get_info_ext(resource_id as i32, &mut info_ext) };
+        ret_to_res(ret)?;
+        dbg!(info_ext.modifiers);
+
+        Ok(info_ext)
     }
 }
