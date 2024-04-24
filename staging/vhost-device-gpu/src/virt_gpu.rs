@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::num::NonZeroU32;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -25,10 +24,11 @@ use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 //use super::super::Queue as VirtQueue;
 use super::protocol::GpuResponse::*;
 use super::protocol::{
-    GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE,
-    VIRTIO_GPU_BLOB_MEM_HOST3D,
+    virtio_gpu_rect, virtio_gpu_set_scanout, GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult,
+    VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, VIRTIO_GPU_BLOB_MEM_HOST3D,
 };
 use crate::protocol::VIRTIO_GPU_FLAG_INFO_RING_IDX;
+use crate::virtio_gpu::VIRTIO_GPU_MAX_SCANOUTS;
 use std::result::Result;
 use vhost::vhost_user::GpuBackend;
 
@@ -80,10 +80,32 @@ pub struct FenceState {
     completed_fences: BTreeMap<VirtioGpuRing, u64>,
 }
 
+#[derive(Copy, Clone, Debug, Default)]
+struct AssociatedScanouts(u32);
+
+impl AssociatedScanouts {
+    fn enable(&mut self, scanout_id: u32) {
+        self.0 |= 1 << scanout_id;
+    }
+
+    fn disable(&mut self, scanout_id: u32) {
+        self.0 ^= 1 << scanout_id;
+    }
+
+    fn iter_enabled(self) -> impl Iterator<Item = u32> {
+        (0..VIRTIO_GPU_MAX_SCANOUTS)
+            .filter(move |i| ((self.0 >> i) & 1) == 1)
+            .map(|n| n as u32)
+    }
+}
+
 struct VirtioGpuResource {
     size: u64,
     shmem_offset: Option<u64>,
     rutabaga_external_mapping: bool,
+    /// Stores information about which scanouts are associated with the given resource.
+    /// Resource could be used for multiple scanouts (the displays are mirrored).
+    scanounts: AssociatedScanouts,
 }
 
 impl VirtioGpuResource {
@@ -94,14 +116,40 @@ impl VirtioGpuResource {
             size,
             shmem_offset: None,
             rutabaga_external_mapping: false,
+            scanounts: Default::default(),
         }
     }
+}
+
+struct Rectangle {
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+}
+
+impl From<virtio_gpu_rect> for Rectangle {
+    fn from(r: virtio_gpu_rect) -> Self {
+        Self {
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        }
+    }
+}
+
+struct VirtioGpuScanout {
+    resource_id: u32,
+    rect: Rectangle,
+    data: Vec<u8>,
 }
 
 pub struct VirtioGpu {
     rutabaga: Rutabaga,
     resources: BTreeMap<u32, VirtioGpuResource>,
     fence_state: Arc<Mutex<FenceState>>,
+    scanouts: [Option<VirtioGpuScanout>; VIRTIO_GPU_MAX_SCANOUTS],
 }
 
 impl VirtioGpu {
@@ -218,6 +266,7 @@ impl VirtioGpu {
             rutabaga,
             resources: Default::default(),
             fence_state,
+            scanouts: Default::default(),
         }
     }
 
@@ -277,37 +326,51 @@ impl VirtioGpu {
     pub fn set_scanout(
         &mut self,
         gpu_backend: &mut GpuBackend,
-        gpu_scanout: VhostUserGpuScanout,
-        resource_id: u32,
+        info: virtio_gpu_set_scanout,
     ) -> VirtioGpuResult {
-        gpu_backend.set_scanout(&gpu_scanout).map_err(|e| {
-            error!("Failed to set scanout from frontend: {}", e);
-            ErrUnspec
-        })?;
+        let scanout = self
+            .scanouts
+            .get_mut(info.scanout_id as usize)
+            .ok_or(ErrInvalidScanoutId)?;
 
         // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
-        if resource_id == 0 {
-            error!("NOT IMPLEMENTED: disable scanout");
+        if info.resource_id == 0 {
+            *scanout = None;
+            gpu_backend
+                .set_scanout(&VhostUserGpuScanout {
+                    scanout_id: info.scanout_id,
+                    width: 0,
+                    height: 0,
+                })
+                .map_err(|e| {
+                    error!("Failed to set_scanout: {e:?}");
+                    ErrUnspec
+                })?;
+
+            if let Some(resource_id) = scanout.as_ref().map(|scanout| scanout.resource_id) {
+                let resource = self
+                    .resources
+                    .get_mut(&resource_id)
+                    .ok_or(ErrInvalidResourceId)?;
+
+                resource.scanounts.disable(info.scanout_id);
+            }
+
             return Ok(OkNoData);
         }
 
-        let _resource = self
+        let resource = self
             .resources
-            .get_mut(&resource_id)
+            .get_mut(&info.resource_id)
             .ok_or(ErrInvalidResourceId)?;
 
-        //todo:
-        //create a display surface
+        resource.scanounts.enable(info.scanout_id);
 
-        // `resource_id` has already been verified to be non-zero
-        let resource_id = match NonZeroU32::new(resource_id) {
-            Some(id) => id,
-            None => return Ok(OkNoData),
-        };
-        //todo:
-        //store resource_id in a struct that will be used later
-        debug!("resource id: {:?}", resource_id);
-
+        *scanout = Some(VirtioGpuScanout {
+            resource_id: info.resource_id,
+            rect: info.r.into(),
+            data: Vec::new(),
+        });
         Ok(OkNoData)
     }
 
