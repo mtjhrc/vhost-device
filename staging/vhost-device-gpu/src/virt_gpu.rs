@@ -1,6 +1,5 @@
 use std::collections::BTreeMap;
 use std::env;
-use std::num::NonZeroU32;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -25,10 +24,11 @@ use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 //use super::super::Queue as VirtQueue;
 use super::protocol::GpuResponse::*;
 use super::protocol::{
-    GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE,
-    VIRTIO_GPU_BLOB_MEM_HOST3D,
+    virtio_gpu_rect, GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult,
+    VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, VIRTIO_GPU_BLOB_MEM_HOST3D,
 };
 use crate::protocol::VIRTIO_GPU_FLAG_INFO_RING_IDX;
+use crate::virtio_gpu::VIRTIO_GPU_MAX_SCANOUTS;
 use std::result::Result;
 use vhost::vhost_user::GpuBackend;
 
@@ -52,6 +52,25 @@ fn sglist_to_rutabaga_iovecs(
         });
     }
     Ok(rutabaga_iovecs)
+}
+
+#[derive(Default, Debug)]
+pub struct Rectangle {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl From<virtio_gpu_rect> for Rectangle {
+    fn from(r: virtio_gpu_rect) -> Self {
+        Self {
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        }
+    }
 }
 
 pub trait VirtioGpu {
@@ -130,8 +149,9 @@ pub trait VirtioGpu {
     fn set_scanout(
         &mut self,
         gpu_backend: &mut GpuBackend,
-        gpu_scanout: VhostUserGpuScanout,
+        scanout_id: u32,
         resource_id: u32,
+        rect: Rectangle,
     ) -> VirtioGpuResult;
 
     /// Creates a 3D resource with the given properties and resource_id.
@@ -245,11 +265,27 @@ pub struct FenceState {
     completed_fences: BTreeMap<VirtioGpuRing, u64>,
 }
 
+#[derive(Copy, Clone, Debug, Default)]
+struct AssociatedScanouts(u32);
+
+impl AssociatedScanouts {
+    fn enable(&mut self, scanout_id: u32) {
+        self.0 |= 1 << scanout_id;
+    }
+
+    fn disable(&mut self, scanout_id: u32) {
+        self.0 ^= 1 << scanout_id;
+    }
+}
+
 #[derive(Default)]
 pub struct VirtioGpuResource {
     pub size: u64,
     pub shmem_offset: Option<u64>,
     pub rutabaga_external_mapping: bool,
+    /// Stores information about which scanouts are associated with the given resource.
+    /// Resource could be used for multiple scanouts (the displays are mirrored).
+    scanouts: AssociatedScanouts,
 }
 
 impl VirtioGpuResource {
@@ -260,14 +296,20 @@ impl VirtioGpuResource {
             size,
             shmem_offset: None,
             rutabaga_external_mapping: false,
+            scanouts: Default::default(),
         }
     }
+}
+
+pub struct VirtioGpuScanout {
+    resource_id: u32,
 }
 
 pub struct RutabagaVirtioGpu {
     pub(crate) rutabaga: Rutabaga,
     pub(crate) resources: BTreeMap<u32, VirtioGpuResource>,
     pub(crate) fence_state: Arc<Mutex<FenceState>>,
+    pub(crate) scanouts: [Option<VirtioGpuScanout>; VIRTIO_GPU_MAX_SCANOUTS],
 }
 
 impl RutabagaVirtioGpu {
@@ -387,6 +429,7 @@ impl RutabagaVirtioGpu {
             rutabaga,
             resources: Default::default(),
             fence_state,
+            scanouts: Default::default(),
         }
     }
 
@@ -444,37 +487,65 @@ impl VirtioGpu for RutabagaVirtioGpu {
     fn set_scanout(
         &mut self,
         gpu_backend: &mut GpuBackend,
-        gpu_scanout: VhostUserGpuScanout,
+        scanout_id: u32,
         resource_id: u32,
+        rect: Rectangle,
     ) -> VirtioGpuResult {
-        gpu_backend.set_scanout(&gpu_scanout).map_err(|e| {
-            error!("Failed to set scanout from frontend: {}", e);
-            ErrUnspec
-        })?;
+        let scanout = self
+            .scanouts
+            .get_mut(scanout_id as usize)
+            .ok_or(ErrInvalidScanoutId)?;
+
+        // If a resource is already associated with this scanout, make sure to disable this scanout for that resource
+        if let Some(resource_id) = scanout.as_ref().map(|scanout| scanout.resource_id) {
+            let resource = self
+                .resources
+                .get_mut(&resource_id)
+                .ok_or(ErrInvalidResourceId)?;
+
+            resource.scanouts.disable(scanout_id);
+        }
 
         // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
         if resource_id == 0 {
-            error!("NOT IMPLEMENTED: disable scanout");
+            *scanout = None;
+            debug!("Disabling scanout scanout_id={scanout_id}");
+            gpu_backend
+                .set_scanout(&VhostUserGpuScanout {
+                    scanout_id,
+                    width: 0,
+                    height: 0,
+                })
+                .map_err(|e| {
+                    error!("Failed to set_scanout: {e:?}");
+                    ErrUnspec
+                })?;
             return Ok(OkNoData);
         }
 
-        let _resource = self
+        debug!("Enabling scanout scanout_id={scanout_id}, resource_id={resource_id}: {rect:?}");
+
+        // QEMU doesn't like (it lags) when we call set_scanout while the scanout is enabled
+        if scanout.is_none() {
+            gpu_backend
+                .set_scanout(&VhostUserGpuScanout {
+                    scanout_id,
+                    width: rect.width,
+                    height: rect.height,
+                })
+                .map_err(|e| {
+                    error!("Failed to set_scanout: {e:?}");
+                    ErrUnspec
+                })?;
+        }
+
+        let resource = self
             .resources
             .get_mut(&resource_id)
             .ok_or(ErrInvalidResourceId)?;
 
-        //todo:
-        //create a display surface
-
-        // `resource_id` has already been verified to be non-zero
-        let resource_id = match NonZeroU32::new(resource_id) {
-            Some(id) => id,
-            None => return Ok(OkNoData),
-        };
-        //todo:
-        //store resource_id in a struct that will be used later
-        debug!("resource id: {:?}", resource_id);
-
+        resource.scanouts.enable(scanout_id);
+        *scanout = Some(VirtioGpuScanout { resource_id });
         Ok(OkNoData)
     }
 
@@ -848,6 +919,7 @@ mod tests {
             rutabaga,
             resources: Default::default(),
             fence_state: Arc::new(Mutex::new(Default::default())),
+            scanouts: Default::default(),
         }
     }
 

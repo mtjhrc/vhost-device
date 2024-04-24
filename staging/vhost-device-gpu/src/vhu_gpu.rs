@@ -13,7 +13,7 @@ use std::{
 
 use thiserror::Error as ThisError;
 use vhost::vhost_user::gpu_message::{
-    VhostUserGpuCursorPos, VhostUserGpuEdidRequest, VhostUserGpuScanout, VirtioGpuRespDisplayInfo,
+    VhostUserGpuCursorPos, VhostUserGpuEdidRequest, VirtioGpuRespDisplayInfo,
 };
 use vhost::vhost_user::message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures};
 use vhost::vhost_user::GpuBackend;
@@ -165,19 +165,12 @@ impl VhostUserGpuBackend {
                 virtio_gpu.resource_create_3d(resource_id, resource_create_3d)
             }
             GpuCommand::ResourceUnref(info) => virtio_gpu.unref_resource(info.resource_id),
-            GpuCommand::SetScanout(info) => {
-                debug!("SetScanout: {info:?}");
-                let gpu_scanout: VhostUserGpuScanout = VhostUserGpuScanout {
-                    scanout_id: info.scanout_id,
-                    width: info.r.width,
-                    height: info.r.height,
-                };
-                virtio_gpu.set_scanout(
-                    self.gpu_backend.as_mut().unwrap(),
-                    gpu_scanout,
-                    info.resource_id,
-                )
-            }
+            GpuCommand::SetScanout(info) => virtio_gpu.set_scanout(
+                self.gpu_backend.as_mut().unwrap(),
+                info.scanout_id,
+                info.resource_id,
+                info.r.into(),
+            ),
             GpuCommand::ResourceFlush(info) => virtio_gpu.flush_resource(info.resource_id),
             GpuCommand::TransferToHost2d(info) => {
                 let resource_id = info.resource_id;
@@ -845,6 +838,7 @@ mod tests {
             rutabaga,
             resources: BTreeMap::default(),
             fence_state: Arc::new(Mutex::new(Default::default())),
+            scanouts: Default::default(),
         }
     }
 
