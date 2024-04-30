@@ -168,7 +168,7 @@ impl VhostUserGpuBackend {
             GpuCommand::SetScanout(info) => {
                 virtio_gpu.set_scanout(self.gpu_backend.as_mut().unwrap(), info)
             }
-            GpuCommand::ResourceFlush(info) => virtio_gpu.flush_resource(info.resource_id),
+            GpuCommand::ResourceFlush(info) => virtio_gpu.flush_resource(info.resource_id, self.gpu_backend.as_mut().unwrap(), info.r.into()),
             GpuCommand::TransferToHost2d(info) => {
                 let resource_id = info.resource_id;
                 let transfer = Transfer3D::new_2d(info.r.x, info.r.y, info.r.width, info.r.height);

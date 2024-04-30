@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::env;
+use std::io::IoSliceMut;
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -9,14 +10,15 @@ use libc::c_void;
 use log::{debug, error};
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaChannel,
-    RutabagaFence, RutabagaFenceHandler, RutabagaIovec, Transfer3D, RUTABAGA_CHANNEL_TYPE_WAYLAND,
-    RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_ACCESS_READ, RUTABAGA_MAP_ACCESS_RW,
-    RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
+    RutabagaFence, RutabagaFenceHandler, RutabagaIovec, RutabagaResult, Transfer3D,
+    RUTABAGA_CHANNEL_TYPE_WAYLAND, RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_ACCESS_READ,
+    RUTABAGA_MAP_ACCESS_RW, RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK,
+    RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
 };
 //use utils::eventfd::EventFd;
 use vhost::vhost_user::gpu_message::{
     VhostUserGpuCursorPos, VhostUserGpuCursorUpdate, VhostUserGpuEdidRequest, VhostUserGpuScanout,
-    VirtioGpuRespDisplayInfo,
+    VhostUserGpuUpdate, VirtioGpuRespDisplayInfo,
 };
 use vhost_user_backend::{VringRwLock, VringT};
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
@@ -105,7 +107,7 @@ struct VirtioGpuResource {
     rutabaga_external_mapping: bool,
     /// Stores information about which scanouts are associated with the given resource.
     /// Resource could be used for multiple scanouts (the displays are mirrored).
-    scanounts: AssociatedScanouts,
+    scanouts: AssociatedScanouts,
 }
 
 impl VirtioGpuResource {
@@ -116,12 +118,13 @@ impl VirtioGpuResource {
             size,
             shmem_offset: None,
             rutabaga_external_mapping: false,
-            scanounts: Default::default(),
+            scanouts: Default::default(),
         }
     }
 }
 
-struct Rectangle {
+#[derive(Default, Debug)]
+pub struct Rectangle {
     x: u32,
     y: u32,
     width: u32,
@@ -142,7 +145,6 @@ impl From<virtio_gpu_rect> for Rectangle {
 struct VirtioGpuScanout {
     resource_id: u32,
     rect: Rectangle,
-    data: Vec<u8>,
 }
 
 pub struct VirtioGpu {
@@ -291,6 +293,35 @@ impl VirtioGpu {
         }
     }
 
+    fn read_2d_resource(
+        &mut self,
+        resource_id: u32,
+        rect: &Rectangle,
+        output: &mut [u8],
+    ) -> RutabagaResult<()> {
+        const BYTES_PER_PIXEL: usize = 4;
+        let result_len = rect.width as usize * rect.height as usize * BYTES_PER_PIXEL;
+        assert!(output.len() >= result_len);
+
+        let transfer = Transfer3D {
+            x: rect.x,
+            y: rect.y,
+            z: 0,
+            w: rect.width,
+            h: rect.height,
+            d: 1,
+            level: 0,
+            stride: rect.width * BYTES_PER_PIXEL as u32,
+            layer_stride: 0,
+            offset: 0,
+        };
+
+        self.rutabaga
+            .transfer_read(0, resource_id, transfer, Some(IoSliceMut::new(output)))?;
+
+        Ok(())
+    }
+
     pub fn force_ctx_0(&self) {
         self.rutabaga.force_ctx_0()
     }
@@ -339,8 +370,8 @@ impl VirtioGpu {
             gpu_backend
                 .set_scanout(&VhostUserGpuScanout {
                     scanout_id: info.scanout_id,
-                    width: 0,
-                    height: 0,
+                    width: info.r.width,
+                    height: info.r.height,
                 })
                 .map_err(|e| {
                     error!("Failed to set_scanout: {e:?}");
@@ -353,7 +384,7 @@ impl VirtioGpu {
                     .get_mut(&resource_id)
                     .ok_or(ErrInvalidResourceId)?;
 
-                resource.scanounts.disable(info.scanout_id);
+                resource.scanouts.disable(info.scanout_id);
             }
 
             return Ok(OkNoData);
@@ -364,13 +395,18 @@ impl VirtioGpu {
             .get_mut(&info.resource_id)
             .ok_or(ErrInvalidResourceId)?;
 
-        resource.scanounts.enable(info.scanout_id);
+        resource.scanouts.enable(info.scanout_id);
+        let rect = info.r.into();
+        debug!(
+            "Enabling scanout: scanout_id: {}, resource_id: {}, {:?}",
+            info.scanout_id, info.resource_id, rect
+        );
 
         *scanout = Some(VirtioGpuScanout {
             resource_id: info.resource_id,
-            rect: info.r.into(),
-            data: Vec::new(),
+            rect,
         });
+
         Ok(OkNoData)
     }
 
@@ -411,9 +447,51 @@ impl VirtioGpu {
     }
 
     /// If the resource is the scanout resource, flush it to the display.
-    pub fn flush_resource(&mut self, resource_id: u32) -> VirtioGpuResult {
+    pub fn flush_resource(
+        &mut self,
+        resource_id: u32,
+        gpu_backend: &mut GpuBackend,
+        rect: Rectangle,
+    ) -> VirtioGpuResult {
         if resource_id == 0 {
             return Ok(OkNoData);
+        }
+
+        let resource = self
+            .resources
+            .get(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        for scanout_id in resource.scanouts.iter_enabled() {
+            let scanout = self.scanouts[scanout_id as usize].as_mut().unwrap();
+            if rect.width > scanout.rect.width || rect.height > scanout.rect.height {
+                log::error!("Guest specified partial flush area is smaller than the scanout area! ({rect:?} > {scanout_rect:?})",
+                    scanout_rect = scanout.rect
+                );
+                continue;
+            }
+
+            let mut image = vec![0; rect.width as usize * rect.height as usize * 4];
+            if let Err(e) = self.read_2d_resource(resource_id, &rect, &mut image) {
+                log::error!("Failed to read resource {resource_id} for scanout {scanout_id}: {e}");
+                continue;
+            }
+
+            gpu_backend
+                .update_scanout(
+                    &VhostUserGpuUpdate {
+                        scanout_id: scanout_id,
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                    },
+                    &image,
+                )
+                .map_err(|e| {
+                    error!("Failed to update_scanout: {e:?}");
+                    ErrUnspec
+                })?
         }
 
         #[cfg(windows)]
