@@ -5,6 +5,8 @@
 //! The cross-domain component type, specialized for allocating and sharing resources across domain
 //! boundaries.
 
+#![cfg(feature = "crossdomain")]
+
 use std::cmp::max;
 use std::collections::BTreeMap as Map;
 use std::collections::VecDeque;
