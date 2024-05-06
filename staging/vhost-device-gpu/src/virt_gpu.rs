@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::vhu_gpu::Error;
 use libc::c_void;
-use log::{debug, error};
+use log::{debug, error, trace};
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaChannel,
     RutabagaFence, RutabagaFenceHandler, RutabagaIovec, RutabagaResult, Transfer3D,
@@ -319,6 +319,7 @@ impl VirtioGpuResource {
 
 pub struct VirtioGpuScanout {
     resource_id: u32,
+    rect: Rectangle,
 }
 
 pub struct RutabagaVirtioGpu {
@@ -591,7 +592,7 @@ impl VirtioGpu for RutabagaVirtioGpu {
             .ok_or(ErrInvalidResourceId)?;
 
         resource.scanouts.enable(scanout_id);
-        *scanout = Some(VirtioGpuScanout { resource_id });
+        *scanout = Some(VirtioGpuScanout { resource_id, rect });
         Ok(OkNoData)
     }
 
@@ -684,8 +685,24 @@ impl VirtioGpu for RutabagaVirtioGpu {
         &mut self,
         ctx_id: u32,
         resource_id: u32,
-        transfer: Transfer3D,
+        mut transfer: Transfer3D,
     ) -> VirtioGpuResult {
+        trace!("transfer_write ctx_id {ctx_id}, resource_id {resource_id}, {transfer:?}");
+
+        let resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        // FIXME: horrible hack, that makes transfer_read work for scanout!
+        if let Some(scanout_id) = resource.scanouts.iter_enabled().next() {
+            let rect = &mut self.scanouts[scanout_id as usize].as_mut().unwrap().rect;
+            transfer.x = 0;
+            transfer.y = 0;
+            transfer.w = rect.width;
+            transfer.h = rect.height;
+        }
+
         self.rutabaga
             .transfer_write(ctx_id, resource_id, transfer)?;
         Ok(OkNoData)
