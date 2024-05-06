@@ -7,7 +7,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::vhu_gpu::Error;
 use libc::c_void;
-use log::{debug, error};
+use log::{debug, error, trace};
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaChannel,
     RutabagaFence, RutabagaFenceHandler, RutabagaIovec, RutabagaResult, Transfer3D,
@@ -94,6 +94,10 @@ impl AssociatedScanouts {
         self.0 ^= 1 << scanout_id;
     }
 
+    fn has_any(&self) -> bool {
+        self.0 == 0
+    }
+
     fn iter_enabled(self) -> impl Iterator<Item = u32> {
         (0..VIRTIO_GPU_MAX_SCANOUTS)
             .filter(move |i| ((self.0 >> i) & 1) == 1)
@@ -123,7 +127,7 @@ impl VirtioGpuResource {
     }
 }
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Copy, Clone)]
 pub struct Rectangle {
     x: u32,
     y: u32,
@@ -295,6 +299,7 @@ impl VirtioGpu {
 
     fn read_2d_resource(
         &mut self,
+        ctx_id: u32,
         resource_id: u32,
         rect: &Rectangle,
         output: &mut [u8],
@@ -317,7 +322,7 @@ impl VirtioGpu {
         };
 
         self.rutabaga
-            .transfer_read(0, resource_id, transfer, Some(IoSliceMut::new(output)))?;
+            .transfer_read(ctx_id, resource_id, transfer, Some(IoSliceMut::new(output)))?;
 
         Ok(())
     }
@@ -366,7 +371,6 @@ impl VirtioGpu {
 
         // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
         if info.resource_id == 0 {
-            *scanout = None;
             gpu_backend
                 .set_scanout(&VhostUserGpuScanout {
                     scanout_id: info.scanout_id,
@@ -386,7 +390,8 @@ impl VirtioGpu {
 
                 resource.scanouts.disable(info.scanout_id);
             }
-
+            debug!("Disabling scanout {}", info.scanout_id);
+            *scanout = None;
             return Ok(OkNoData);
         }
 
@@ -449,6 +454,7 @@ impl VirtioGpu {
     /// If the resource is the scanout resource, flush it to the display.
     pub fn flush_resource(
         &mut self,
+        ctx_id: u32,
         resource_id: u32,
         gpu_backend: &mut GpuBackend,
         rect: Rectangle,
@@ -463,16 +469,12 @@ impl VirtioGpu {
             .ok_or(ErrInvalidResourceId)?;
 
         for scanout_id in resource.scanouts.iter_enabled() {
-            let scanout = self.scanouts[scanout_id as usize].as_mut().unwrap();
-            if rect.width > scanout.rect.width || rect.height > scanout.rect.height {
-                log::error!("Guest specified partial flush area is smaller than the scanout area! ({rect:?} > {scanout_rect:?})",
-                    scanout_rect = scanout.rect
-                );
-                continue;
-            }
+            let scanout  = self.scanouts[scanout_id as usize].as_mut().unwrap();
+            let scanout_rect = scanout.rect;
+            trace!("Updating scanout {scanout_id} with resource {resource_id}. Updating {rect:?} of {scanout_rect:?}");
 
             let mut image = vec![0; rect.width as usize * rect.height as usize * 4];
-            if let Err(e) = self.read_2d_resource(resource_id, &rect, &mut image) {
+            if let Err(e) = self.read_2d_resource(ctx_id, resource_id, &rect, &mut image) {
                 log::error!("Failed to read resource {resource_id} for scanout {scanout_id}: {e}");
                 continue;
             }
@@ -509,8 +511,24 @@ impl VirtioGpu {
         &mut self,
         ctx_id: u32,
         resource_id: u32,
-        transfer: Transfer3D,
+        mut transfer: Transfer3D,
     ) -> VirtioGpuResult {
+        trace!("transfer_write ctx_id {ctx_id}, resource_id {resource_id}, {transfer:?}");
+
+        let resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        // FIXME: horrible hack, that makes transfer_read work for scanout!
+        if let Some(scanout_id) = resource.scanouts.iter_enabled().next() {
+            let rect = self.scanouts[scanout_id as usize].as_ref().unwrap().rect;
+            transfer.x = 0;
+            transfer.y = 0;
+            transfer.w = rect.width;
+            transfer.h = rect.height;
+        }
+
         self.rutabaga
             .transfer_write(ctx_id, resource_id, transfer)?;
         Ok(OkNoData)

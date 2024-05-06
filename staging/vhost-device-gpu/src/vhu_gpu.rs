@@ -166,9 +166,13 @@ impl VhostUserGpuBackend {
             }
             GpuCommand::ResourceUnref(info) => virtio_gpu.unref_resource(info.resource_id),
             GpuCommand::SetScanout(info) => {
+                debug!("Set scanout with context {}", hdr.ctx_id);
                 virtio_gpu.set_scanout(self.gpu_backend.as_mut().unwrap(), info)
             }
-            GpuCommand::ResourceFlush(info) => virtio_gpu.flush_resource(info.resource_id, self.gpu_backend.as_mut().unwrap(), info.r.into()),
+            GpuCommand::ResourceFlush(info) => {
+                debug!("Resource flush with context {}", hdr.ctx_id);
+                virtio_gpu.flush_resource(hdr.ctx_id, info.resource_id, self.gpu_backend.as_mut().unwrap(), info.r.into())
+            },
             GpuCommand::TransferToHost2d(info) => {
                 let resource_id = info.resource_id;
                 let transfer = Transfer3D::new_2d(info.r.x, info.r.y, info.r.width, info.r.height);
