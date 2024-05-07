@@ -108,7 +108,7 @@ impl VhostUserGpuBackend {
                 events_read: 0.into(),
                 events_clear: 0.into(),
                 num_scanouts: Le32::from(VIRTIO_GPU_MAX_SCANOUTS as u32),
-                num_capsets: 0.into(),
+                num_capsets: RutabagaVirtioGpu::MAX_NUMBER_OF_CAPSETS.into(),
             },
             event_idx: false,
             gpu_backend: None,

@@ -56,6 +56,8 @@ fn sglist_to_rutabaga_iovecs(
 }
 
 pub trait VirtioGpu {
+    const MAX_NUMBER_OF_CAPSETS: u32;
+
     fn update_scanout_resource(
         &mut self,
         gpu_backend: &mut GpuBackend,
@@ -422,6 +424,8 @@ impl RutabagaVirtioGpu {
 }
 
 impl VirtioGpu for RutabagaVirtioGpu {
+    const MAX_NUMBER_OF_CAPSETS: u32 = 5;
+
     fn force_ctx_0(&self) {
         self.rutabaga.force_ctx_0()
     }
