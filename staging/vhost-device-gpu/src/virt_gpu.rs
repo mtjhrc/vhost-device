@@ -283,6 +283,9 @@ pub struct RutabagaVirtioGpu {
 }
 
 impl RutabagaVirtioGpu {
+    // TODO: this depends on Rutabaga builder, so this will need to be handled at runtime eventually
+    pub const MAX_NUMBER_OF_CAPSETS: u32 = 3;
+
     fn create_fence_handler(
         queue_ctl: VringRwLock,
         fence_state: Arc<Mutex<FenceState>>,
