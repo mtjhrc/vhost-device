@@ -1090,6 +1090,87 @@ impl RutabagaBuilder {
         self
     }
 
+    // Tries to dry-run build Rutabaga and returns the number of capsets that would be supported
+    pub fn get_num_capsets(&self) -> RutabagaResult<u32> {
+        let mut num_capsets = 0;
+
+        let capset_enabled =
+            |capset_id: u32| -> bool { (self.capset_mask & (1 << capset_id)) != 0 };
+
+        let mut push_capset = |capset_id: u32| {
+            if let Some(capset) = RUTABAGA_CAPSETS
+                .iter()
+                .find(|capset| capset_id == capset.capset_id)
+            {
+                if self.capset_mask != 0 {
+                    if capset_enabled(capset.capset_id) {
+                        num_capsets += 1;
+                    }
+                } else {
+                    // Unconditionally push capset -- this should eventually be deleted when context
+                    // types are always specified by crosvm launchers.
+                    num_capsets += 1;
+                }
+            };
+        };
+
+        let default_component = if self.capset_mask != 0 {
+            let supports_gfxstream = capset_enabled(RUTABAGA_CAPSET_GFXSTREAM_VULKAN)
+                | capset_enabled(RUTABAGA_CAPSET_GFXSTREAM_MAGMA)
+                | capset_enabled(RUTABAGA_CAPSET_GFXSTREAM_GLES)
+                | capset_enabled(RUTABAGA_CAPSET_GFXSTREAM_COMPOSER);
+            let supports_virglrenderer = capset_enabled(RUTABAGA_CAPSET_VIRGL2)
+                | capset_enabled(RUTABAGA_CAPSET_VENUS)
+                | capset_enabled(RUTABAGA_CAPSET_DRM);
+
+            if supports_gfxstream {
+                RutabagaComponentType::Gfxstream
+            } else if supports_virglrenderer {
+                RutabagaComponentType::VirglRenderer
+            } else {
+                RutabagaComponentType::CrossDomain
+            }
+        } else {
+            self.default_component
+        };
+
+        // Make sure that disabled components are not used as default.
+        #[cfg(not(feature = "virgl_renderer"))]
+        if self.default_component == RutabagaComponentType::VirglRenderer {
+            return Err(RutabagaError::InvalidRutabagaBuild(
+                "virgl renderer feature not enabled",
+            ));
+        }
+        #[cfg(not(feature = "gfxstream"))]
+        if self.default_component == RutabagaComponentType::Gfxstream {
+            return Err(RutabagaError::InvalidRutabagaBuild(
+                "gfxstream feature not enabled",
+            ));
+        }
+        #[cfg(feature = "virgl_renderer")]
+        if default_component == RutabagaComponentType::VirglRenderer {
+            push_capset(RUTABAGA_CAPSET_VIRGL);
+            push_capset(RUTABAGA_CAPSET_VIRGL2);
+            push_capset(RUTABAGA_CAPSET_VENUS);
+            push_capset(RUTABAGA_CAPSET_DRM);
+        }
+
+        #[cfg(feature = "gfxstream")]
+        if default_component == RutabagaComponentType::Gfxstream {
+            push_capset(RUTABAGA_CAPSET_GFXSTREAM_VULKAN);
+            push_capset(RUTABAGA_CAPSET_GFXSTREAM_MAGMA);
+            push_capset(RUTABAGA_CAPSET_GFXSTREAM_GLES);
+            push_capset(RUTABAGA_CAPSET_GFXSTREAM_COMPOSER);
+        }
+
+        if default_component == RutabagaComponentType::CrossDomain {
+            push_capset(RUTABAGA_CAPSET_CROSS_DOMAIN);
+        }
+
+        Ok(num_capsets)
+    }
+
+
     /// Builds Rutabaga and returns a handle to it.
     ///
     /// This should be only called once per every virtual machine instance.  Rutabaga tries to
