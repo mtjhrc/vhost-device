@@ -171,6 +171,24 @@ impl VirtioGpu {
         })
     }
 
+    fn rutabaga_builder(rutabaga_channels: Option<Vec<RutabagaChannel>>) -> RutabagaBuilder {
+        RutabagaBuilder::new(rutabaga_gfx::RutabagaComponentType::VirglRenderer, 0)
+            .set_rutabaga_channels(rutabaga_channels)
+            .set_use_egl(true)
+            .set_use_gles(true)
+            .set_use_glx(true)
+            .set_use_surfaceless(true)
+        // TODO: figure out if we need this:
+        // this was part of libkrun modification and not upstream crossvm rutabaga
+        //.set_use_drm(true);
+    }
+
+    pub fn get_num_capsets() -> u32 {
+        dbg!(Self::rutabaga_builder(None)
+            .get_num_capsets()
+            .expect("Bad Rutabaga builder configuration"))
+    }
+
     pub fn new(
         queue_ctl: &VringRwLock,
         // interrupt_status: Arc<AtomicUsize>,
@@ -192,17 +210,7 @@ impl VirtioGpu {
             base_channel: path,
             channel_type: RUTABAGA_CHANNEL_TYPE_WAYLAND,
         }];
-        let rutabaga_channels_opt = Some(rutabaga_channels);
-
-        let builder = RutabagaBuilder::new(rutabaga_gfx::RutabagaComponentType::VirglRenderer, 0)
-            .set_rutabaga_channels(rutabaga_channels_opt)
-            .set_use_egl(true)
-            .set_use_gles(true)
-            .set_use_glx(true)
-            .set_use_surfaceless(true);
-        // TODO: figure out if we need this:
-        // this was part of libkrun modification and not upstream crossvm rutabaga
-        //.set_use_drm(true);
+        let builder = Self::rutabaga_builder(Some(rutabaga_channels));
 
         let fence_state = Arc::new(Mutex::new(Default::default()));
         let fence = Self::create_fence_handler(
