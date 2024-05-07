@@ -8,7 +8,7 @@ use log::trace;
 use std::cmp::min;
 use std::convert::From;
 use std::fmt::Display;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::marker::PhantomData;
 use std::mem::{size_of, size_of_val};
 use std::str::from_utf8;
@@ -549,7 +549,10 @@ pub enum GpuCommand {
     ResourceCreate3d(virtio_gpu_resource_create_3d),
     TransferToHost3d(virtio_gpu_transfer_host_3d),
     TransferFromHost3d(virtio_gpu_transfer_host_3d),
-    CmdSubmit3d(virtio_gpu_cmd_submit),
+    CmdSubmit3d {
+        cmd_data: Vec<u8>,
+        fence_ids: Vec<u64>,
+    },
     ResourceCreateBlob(virtio_gpu_resource_create_blob),
     ResourceMapBlob(virtio_gpu_resource_map_blob),
     ResourceUnmapBlob(virtio_gpu_resource_unmap_blob),
@@ -613,7 +616,7 @@ impl fmt::Debug for GpuCommand {
             ResourceCreate3d(_info) => f.debug_struct("ResourceCreate3d").finish(),
             TransferToHost3d(_info) => f.debug_struct("TransferToHost3d").finish(),
             TransferFromHost3d(_info) => f.debug_struct("TransferFromHost3d").finish(),
-            CmdSubmit3d(_info) => f.debug_struct("CmdSubmit3d").finish(),
+            CmdSubmit3d { .. } => f.debug_struct("CmdSubmit3d").finish(),
             ResourceCreateBlob(_info) => f.debug_struct("ResourceCreateBlob").finish(),
             ResourceMapBlob(_info) => f.debug_struct("ResourceMapBlob").finish(),
             ResourceUnmapBlob(_info) => f.debug_struct("ResourceUnmapBlob").finish(),
@@ -699,7 +702,27 @@ impl GpuCommand {
                 TransferFromHost3d(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
             }
             VIRTIO_GPU_CMD_SUBMIT_3D => {
-                CmdSubmit3d(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+                let info: virtio_gpu_cmd_submit =
+                    reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?;
+
+                let mut cmd_data = vec![0; info.size as usize];
+                let mut fence_ids: Vec<u64> = Vec::with_capacity(info.num_in_fences as usize);
+
+                for _ in 0..info.num_in_fences {
+                    let fence_id = reader
+                        .read_obj::<u64>()
+                        .map_err(|_| Error::DescriptorReadFailed)?;
+                    fence_ids.push(fence_id);
+                }
+
+                reader
+                    .read_exact(&mut cmd_data[..])
+                    .map_err(|_| Error::DescriptorReadFailed)?;
+
+                CmdSubmit3d {
+                    cmd_data,
+                    fence_ids,
+                }
             }
             VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB => {
                 ResourceCreateBlob(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
@@ -1053,7 +1076,10 @@ mod tests {
             GpuCommand::TransferToHost3d(virtio_gpu_transfer_host_3d::default());
         let transfer_from_host_3d =
             GpuCommand::TransferFromHost3d(virtio_gpu_transfer_host_3d::default());
-        let cmd_submit_3d = GpuCommand::CmdSubmit3d(virtio_gpu_cmd_submit::default());
+        let cmd_submit_3d = GpuCommand::CmdSubmit3d {
+            cmd_data: Vec::new(),
+            fence_ids: Vec::new(),
+        };
         let resource_create_blob =
             GpuCommand::ResourceCreateBlob(virtio_gpu_resource_create_blob::default());
         let resource_map_blob =
