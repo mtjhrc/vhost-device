@@ -11,6 +11,7 @@ use log::{debug, error, trace};
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaChannel,
     RutabagaFence, RutabagaFenceHandler, RutabagaIovec, RutabagaResult, Transfer3D,
+    RUTABAGA_CAPSET_DRM, RUTABAGA_CAPSET_VENUS, RUTABAGA_CAPSET_VIRGL, RUTABAGA_CAPSET_VIRGL2,
     RUTABAGA_CHANNEL_TYPE_WAYLAND, RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_ACCESS_READ,
     RUTABAGA_MAP_ACCESS_RW, RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK,
     RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
@@ -415,13 +416,25 @@ impl RutabagaVirtioGpu {
             channel_type: RUTABAGA_CHANNEL_TYPE_WAYLAND,
         }];
         let rutabaga_channels_opt = Some(rutabaga_channels);
-
-        let builder = RutabagaBuilder::new(rutabaga_gfx::RutabagaComponentType::VirglRenderer, 0)
-            .set_rutabaga_channels(rutabaga_channels_opt)
-            .set_use_egl(true)
-            .set_use_gles(true)
-            .set_use_glx(true)
-            .set_use_surfaceless(true);
+        // [RutabagaCapsetInfo { capset_id: 1, component: VirglRenderer, name: "virgl" },
+        // RutabagaCapsetInfo { capset_id: 2, component: VirglRenderer, name: "virgl2" },
+        // RutabagaCapsetInfo { capset_id: 4, component: VirglRenderer, name: "venus" },
+        // RutabagaCapsetInfo { capset_id: 6, component: VirglRenderer, name: "drm" },
+        // RutabagaCapsetInfo { capset_id: 5, component: CrossDomain, name: "cross-domain" }]
+        let builder = RutabagaBuilder::new(
+            rutabaga_gfx::RutabagaComponentType::VirglRenderer,
+            (RUTABAGA_CAPSET_VIRGL
+                | RUTABAGA_CAPSET_VIRGL2
+                | RUTABAGA_CAPSET_VENUS
+                | RUTABAGA_CAPSET_DRM
+                | RUTABAGA_CAPSET_VENUS) as u64,
+        )
+        .set_rutabaga_channels(rutabaga_channels_opt)
+        .set_use_egl(true)
+        .set_use_gles(true)
+        .set_use_glx(true)
+        .set_use_surfaceless(true)
+        .set_use_external_blob(true);
         // TODO: figure out if we need this:
         // this was part of libkrun modification and not upstream crossvm rutabaga
         //.set_use_drm(true);
@@ -710,12 +723,15 @@ impl VirtioGpu for RutabagaVirtioGpu {
 
     fn transfer_read(
         &mut self,
-        _ctx_id: u32,
-        _resource_id: u32,
-        _transfer: Transfer3D,
-        _buf: Option<VolatileSlice>,
+        ctx_id: u32,
+        resource_id: u32,
+        transfer: Transfer3D,
+        buf: Option<VolatileSlice>,
     ) -> VirtioGpuResult {
-        panic!("virtio_gpu: transfer_read unimplemented");
+        assert!(buf.is_none(), "TODO: buffer not supported yet");
+        self.rutabaga
+            .transfer_read(ctx_id, resource_id, transfer, None)?;
+        Ok(OkNoData)
     }
 
     fn attach_backing(
