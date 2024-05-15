@@ -216,12 +216,12 @@ pub trait VirtioGpu {
     /// coordinates.
     fn update_cursor(
         &mut self,
-        _resource_id: u32,
+        ctx_id: u32,
+        resource_id: u32,
         gpu_backend: &mut GpuBackend,
         cursor_pos: VhostUserGpuCursorPos,
         hot_x: u32,
         hot_y: u32,
-        _mem: &GuestMemoryMmap,
     ) -> VirtioGpuResult;
 
     /// Moves the cursor's position to the given coordinates.
@@ -752,29 +752,44 @@ impl VirtioGpu for RutabagaVirtioGpu {
 
     fn update_cursor(
         &mut self,
-        _resource_id: u32,
+        ctx_id: u32,
+        resource_id: u32,
         gpu_backend: &mut GpuBackend,
         cursor_pos: VhostUserGpuCursorPos,
         hot_x: u32,
         hot_y: u32,
-        _mem: &GuestMemoryMmap,
     ) -> VirtioGpuResult {
-        //TODO: copy data associated with the resource_id
-        let data = Box::new([0; 4 * 64 * 64]);
+        let mut data = Box::new([0; 4 * 64 * 64]);
+
+        self.read_2d_resource(
+            ctx_id,
+            resource_id,
+            &Rectangle {
+                x: 0,
+                y: 0,
+                width: 64,
+                height: 64,
+            },
+            &mut data[..],
+        )
+        .map_err(|e| {
+            error!("Failed to read resource of cursor: {e}");
+            ErrUnspec
+        })?;
 
         let cursor_update = VhostUserGpuCursorUpdate {
             pos: cursor_pos,
             hot_x,
             hot_y,
         };
+
         gpu_backend
             .cursor_update(&cursor_update, &data)
             .map_err(|e| {
                 error!("Failed to update cursor pos from frontend: {}", e);
                 ErrUnspec
             })?;
-        //TODO: flush resource
-        //self.flush_resource(resource_id, gpu_backend, mem)
+
         Ok(OkNoData)
     }
 

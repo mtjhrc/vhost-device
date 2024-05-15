@@ -193,12 +193,12 @@ impl VhostUserGpuBackend {
                     y: info.pos.y,
                 };
                 virtio_gpu.update_cursor(
+                    hdr.ctx_id,
                     info.resource_id,
                     self.gpu_backend.as_mut().unwrap(),
                     cursor_pos,
                     info.hot_x,
                     info.hot_y,
-                    mem,
                 )
             }
             GpuCommand::MoveCursor(info) => {
