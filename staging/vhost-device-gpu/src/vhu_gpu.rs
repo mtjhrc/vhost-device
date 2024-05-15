@@ -197,7 +197,6 @@ impl VhostUserGpuBackend {
                     cursor_pos,
                     info.hot_x,
                     info.hot_y,
-                    mem,
                 )
             }
             GpuCommand::MoveCursor(info) => {

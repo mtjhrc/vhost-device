@@ -213,12 +213,11 @@ pub trait VirtioGpu {
     /// coordinates.
     fn update_cursor(
         &mut self,
-        _resource_id: u32,
+        resource_id: u32,
         gpu_backend: &mut GpuBackend,
         cursor_pos: VhostUserGpuCursorPos,
         hot_x: u32,
         hot_y: u32,
-        _mem: &GuestMemoryMmap,
     ) -> VirtioGpuResult;
 
     /// Moves the cursor's position to the given coordinates.
@@ -652,10 +651,10 @@ impl VirtioGpu for RutabagaVirtioGpu {
             .ok_or(ErrInvalidResourceId)?;
 
         for scanout_id in resource.scanouts.iter_enabled() {
-            let mut image_data =
+            let mut data =
                 vec![0; rect.width as usize * rect.height as usize * READ_RESOURCE_BYTES_PER_PIXEL];
 
-            if let Err(e) = self.read_2d_resource(resource_id, &rect, &mut image_data) {
+            if let Err(e) = self.read_2d_resource(resource_id, &rect, &mut data) {
                 log::error!("Failed to read resource {resource_id} for scanout {scanout_id}: {e}");
                 continue;
             }
@@ -669,7 +668,7 @@ impl VirtioGpu for RutabagaVirtioGpu {
                         width: rect.width,
                         height: rect.height,
                     },
-                    &image_data,
+                    &data,
                 )
                 .map_err(|e| {
                     error!("Failed to update_scanout: {e:?}");
@@ -744,29 +743,39 @@ impl VirtioGpu for RutabagaVirtioGpu {
 
     fn update_cursor(
         &mut self,
-        _resource_id: u32,
+        resource_id: u32,
         gpu_backend: &mut GpuBackend,
         cursor_pos: VhostUserGpuCursorPos,
         hot_x: u32,
         hot_y: u32,
-        _mem: &GuestMemoryMmap,
     ) -> VirtioGpuResult {
-        //TODO: copy data associated with the resource_id
-        let data = Box::new([0; 4 * 64 * 64]);
+        let mut data = Box::new([0; 4 * 64 * 64]);
+        let cursor_rect = Rectangle {
+            x: 0,
+            y: 0,
+            width: 64,
+            height: 64,
+        };
+
+        self.read_2d_resource(resource_id, &cursor_rect, &mut data[..])
+            .map_err(|e| {
+                error!("Failed to read resource of cursor: {e}");
+                ErrUnspec
+            })?;
 
         let cursor_update = VhostUserGpuCursorUpdate {
             pos: cursor_pos,
             hot_x,
             hot_y,
         };
+
         gpu_backend
             .cursor_update(&cursor_update, &data)
             .map_err(|e| {
                 error!("Failed to update cursor pos from frontend: {}", e);
                 ErrUnspec
             })?;
-        //TODO: flush resource
-        //self.flush_resource(resource_id, gpu_backend, mem)
+
         Ok(OkNoData)
     }
 
