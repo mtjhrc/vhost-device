@@ -1056,7 +1056,7 @@ dependencies = [
 [[package]]
 name = "vhost"
 version = "0.11.0"
-source = "git+https://github.com/mtjhrc/vhost.git?branch=gpuwork-rebased#a9cbbc2438e289cd64e7be40b65047a3db1b1880"
+source = "git+https://github.com/mtjhrc/vhost.git?branch=gpu-socket-final#e1b1ab4fcdb07ef23d3c298281598c4205d83abb"
 dependencies = [
  "bitflags 2.4.1",
  "libc",
@@ -1076,7 +1076,7 @@ dependencies = [
  "rutabaga_gfx",
  "thiserror",
  "vhost 0.11.0",
- "vhost-user-backend 0.14.0",
+ "vhost-user-backend 0.15.0",
  "virtio-bindings",
  "virtio-queue 0.12.0",
  "vm-memory 0.13.1",
@@ -1148,8 +1148,8 @@ dependencies = [
 
 [[package]]
 name = "vhost-user-backend"
-version = "0.14.0"
-source = "git+https://github.com/mtjhrc/vhost.git?branch=gpuwork-rebased#a9cbbc2438e289cd64e7be40b65047a3db1b1880"
+version = "0.15.0"
+source = "git+https://github.com/mtjhrc/vhost.git?branch=gpu-socket-final#e1b1ab4fcdb07ef23d3c298281598c4205d83abb"
 dependencies = [
  "libc",
  "log",

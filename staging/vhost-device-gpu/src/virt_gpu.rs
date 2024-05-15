@@ -555,21 +555,20 @@ impl VirtioGpu for RutabagaVirtioGpu {
         hot_y: u32,
         _mem: &GuestMemoryMmap,
     ) -> VirtioGpuResult {
-        let size: usize = 4096;
         //TODO: copy data associated with the resource_id
-        let data = vec![0u32; size];
-        let mut data_array = [0u32; 4096];
-        data_array.copy_from_slice(&data[..]);
-        let cursor_update: VhostUserGpuCursorUpdate = VhostUserGpuCursorUpdate {
+        let data = Box::new([0; 4 * 64 * 64]);
+
+        let cursor_update = VhostUserGpuCursorUpdate {
             pos: cursor_pos,
             hot_x,
             hot_y,
-            data: data_array,
         };
-        gpu_backend.cursor_update(&cursor_update).map_err(|e| {
-            error!("Failed to update cursor pos from frontend: {}", e);
-            ErrUnspec
-        })?;
+        gpu_backend
+            .cursor_update(&cursor_update, &data)
+            .map_err(|e| {
+                error!("Failed to update cursor pos from frontend: {}", e);
+                ErrUnspec
+            })?;
         //TODO: flush resource
         //self.flush_resource(resource_id, gpu_backend, mem)
         Ok(OkNoData)
@@ -857,9 +856,7 @@ impl VirtioGpu for RutabagaVirtioGpu {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::{
-        RutabagaVirtioGpu, VirtioGpu, VirtioGpuResource, VirtioGpuRing, VirtioShmRegion,
-    };
+    use super::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuResource, VirtioGpuRing, VirtioShmRegion};
     use rutabaga_gfx::{
         ResourceCreateBlob, RutabagaBuilder, RutabagaComponentType, RutabagaHandler,
     };
