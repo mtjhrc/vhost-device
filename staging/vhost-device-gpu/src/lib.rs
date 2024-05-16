@@ -1,6 +1,4 @@
 pub mod protocol;
-#[cfg(test)]
-mod tests;
 pub mod vhu_gpu;
 pub mod virt_gpu;
 pub mod virtio_gpu;
@@ -77,4 +75,54 @@ pub struct Gic {}
 #[cfg(target_os = "linux")]
 impl Gic {
     pub fn set_irq(&mut self, _irq: u32) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use assert_matches::assert_matches;
+    use std::io;
+    use virtio_gpu::VirtioGpuCtrlHdr;
+
+    #[test]
+    fn test_gpu_config() {
+        // Test the creation of GpuConfig struct
+        let socket_path = PathBuf::from("/tmp/socket");
+        let gpu_config = GpuConfig::new(socket_path.clone());
+        assert_eq!(gpu_config.get_socket_path(), socket_path);
+    }
+
+    #[test]
+    fn test_virtio_gpu_ctrl_command() {
+        // Test the creation of VirtioGpuCtrlCommand struct
+        let cmd_hdr = VirtioGpuCtrlHdr::default();
+        let state = GPUstate::GpuCmdStateNew;
+        let ctrl_command = VirtioGpuCtrlCommand { cmd_hdr, state };
+        assert_eq!(ctrl_command.cmd_hdr.gpu_type, 0);
+        assert_eq!(ctrl_command.state, GPUstate::GpuCmdStateNew);
+    }
+
+    #[test]
+    fn test_gic_set_irq() {
+        // Test setting IRQ in Gic struct
+        let mut gic = Gic {};
+        gic.set_irq(1);
+    }
+
+    #[test]
+    fn test_gpu_error() {
+        // Test GPU error variants
+        let event_fd_error = GpuError::EventFd(io::Error::from(io::ErrorKind::NotFound));
+        assert_matches!(event_fd_error, GpuError::EventFd(_));
+
+        let decode_error = GpuError::DecodeCommand(io::Error::from(io::ErrorKind::InvalidData));
+        assert_matches!(decode_error, GpuError::DecodeCommand(_));
+
+        let write_error =
+            GpuError::WriteDescriptor(io::Error::from(io::ErrorKind::PermissionDenied));
+        assert_matches!(write_error, GpuError::WriteDescriptor(_));
+
+        let guest_memory_error = GpuError::GuestMemory;
+        assert_matches!(guest_memory_error, GpuError::GuestMemory);
+    }
 }
