@@ -98,7 +98,7 @@ pub const VIRTIO_GPU_SHM_ID_HOST_VISIBLE: u8 = 0x0001;
 pub const VIRTIO_GPU_FLAG_FENCE: u32 = 1 << 0;
 pub const VIRTIO_GPU_FLAG_INFO_RING_IDX: u32 = 1 << 1;
 
-#[derive(Copy, Clone, Debug, Default, AsBytes, FromBytes)]
+#[derive(Copy, Clone, Debug, Default, AsBytes, FromBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_ctrl_hdr {
     pub type_: u32,
@@ -112,7 +112,7 @@ unsafe impl ByteValued for virtio_gpu_ctrl_hdr {}
 
 /* data passed in the cursor vq */
 
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_cursor_pos {
     pub scanout_id: u32,
@@ -123,7 +123,7 @@ pub struct virtio_gpu_cursor_pos {
 unsafe impl ByteValued for virtio_gpu_cursor_pos {}
 
 /* VIRTIO_GPU_CMD_UPDATE_CURSOR, VIRTIO_GPU_CMD_MOVE_CURSOR */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_update_cursor {
     pub pos: virtio_gpu_cursor_pos, /* update & move */
@@ -136,7 +136,7 @@ unsafe impl ByteValued for virtio_gpu_update_cursor {}
 
 /* data passed in the control vq, 2d related */
 
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_rect {
     pub x: u32,
@@ -147,7 +147,7 @@ pub struct virtio_gpu_rect {
 unsafe impl ByteValued for virtio_gpu_rect {}
 
 /* VIRTIO_GPU_CMD_GET_EDID */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_get_edid {
     pub scanout: u32,
@@ -156,7 +156,7 @@ pub struct virtio_gpu_get_edid {
 unsafe impl ByteValued for virtio_gpu_get_edid {}
 
 /* VIRTIO_GPU_CMD_RESOURCE_UNREF */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_resource_unref {
     pub resource_id: u32,
@@ -165,7 +165,7 @@ pub struct virtio_gpu_resource_unref {
 unsafe impl ByteValued for virtio_gpu_resource_unref {}
 
 /* VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: create a 2d resource with a format */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_resource_create_2d {
     pub resource_id: u32,
@@ -176,7 +176,7 @@ pub struct virtio_gpu_resource_create_2d {
 unsafe impl ByteValued for virtio_gpu_resource_create_2d {}
 
 /* VIRTIO_GPU_CMD_SET_SCANOUT */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_set_scanout {
     pub r: virtio_gpu_rect,
@@ -186,7 +186,7 @@ pub struct virtio_gpu_set_scanout {
 unsafe impl ByteValued for virtio_gpu_set_scanout {}
 
 /* VIRTIO_GPU_CMD_RESOURCE_FLUSH */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_resource_flush {
     pub r: virtio_gpu_rect,
@@ -196,7 +196,7 @@ pub struct virtio_gpu_resource_flush {
 unsafe impl ByteValued for virtio_gpu_resource_flush {}
 
 /* VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D: simple transfer to_host */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_transfer_to_host_2d {
     pub r: virtio_gpu_rect,
@@ -206,7 +206,7 @@ pub struct virtio_gpu_transfer_to_host_2d {
 }
 unsafe impl ByteValued for virtio_gpu_transfer_to_host_2d {}
 
-#[derive(Copy, Clone, Debug, Default, AsBytes, FromBytes)]
+#[derive(Copy, Clone, Debug, Default, AsBytes, FromBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_mem_entry {
     pub addr: u64,
@@ -216,7 +216,7 @@ pub struct virtio_gpu_mem_entry {
 unsafe impl ByteValued for virtio_gpu_mem_entry {}
 
 /* VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_resource_attach_backing {
     pub resource_id: u32,
@@ -225,7 +225,7 @@ pub struct virtio_gpu_resource_attach_backing {
 unsafe impl ByteValued for virtio_gpu_resource_attach_backing {}
 
 /* VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_resource_detach_backing {
     pub resource_id: u32,
@@ -233,7 +233,7 @@ pub struct virtio_gpu_resource_detach_backing {
 }
 unsafe impl ByteValued for virtio_gpu_resource_detach_backing {}
 
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_display_one {
     pub r: virtio_gpu_rect,
@@ -267,7 +267,7 @@ unsafe impl ByteValued for virtio_gpu_resp_edid {}
 
 /* data passed in the control vq, 3d related */
 
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_box {
     pub x: u32,
@@ -280,7 +280,7 @@ pub struct virtio_gpu_box {
 unsafe impl ByteValued for virtio_gpu_box {}
 
 /* VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D, VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_transfer_host_3d {
     pub box_: virtio_gpu_box,
@@ -294,7 +294,7 @@ unsafe impl ByteValued for virtio_gpu_transfer_host_3d {}
 
 /* VIRTIO_GPU_CMD_RESOURCE_CREATE_3D */
 pub const VIRTIO_GPU_RESOURCE_FLAG_Y_0_TOP: u32 = 1 << 0;
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_resource_create_3d {
     pub resource_id: u32,
@@ -314,7 +314,7 @@ unsafe impl ByteValued for virtio_gpu_resource_create_3d {}
 
 /* VIRTIO_GPU_CMD_CTX_CREATE */
 pub const VIRTIO_GPU_CONTEXT_INIT_CAPSET_ID_MASK: u32 = 1 << 0;
-#[derive(Copy, FromBytes, AsBytes)]
+#[derive(Copy, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_ctx_create {
     pub nlen: u32,
@@ -346,13 +346,13 @@ impl fmt::Debug for virtio_gpu_ctx_create {
 }
 
 /* VIRTIO_GPU_CMD_CTX_DESTROY */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_ctx_destroy {}
 unsafe impl ByteValued for virtio_gpu_ctx_destroy {}
 
 /* VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_ctx_resource {
     pub resource_id: u32,
@@ -361,7 +361,7 @@ pub struct virtio_gpu_ctx_resource {
 unsafe impl ByteValued for virtio_gpu_ctx_resource {}
 
 /* VIRTIO_GPU_CMD_SUBMIT_3D */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_cmd_submit {
     pub size: u32,
@@ -389,7 +389,7 @@ pub const VIRTIO_GPU_CAPSET_VENUS: u32 = 4;
 pub const VIRTIO_GPU_CAPSET_CROSS_DOMAIN: u32 = 5;
 
 /* VIRTIO_GPU_CMD_GET_CAPSET_INFO */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_get_capset_info {
     pub capset_index: u32,
@@ -410,7 +410,7 @@ pub struct virtio_gpu_resp_capset_info {
 unsafe impl ByteValued for virtio_gpu_resp_capset_info {}
 
 /* VIRTIO_GPU_CMD_GET_CAPSET */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_get_capset {
     pub capset_id: u32,
@@ -444,7 +444,7 @@ pub const PLANE_INFO_MAX_COUNT: usize = 4;
 
 pub const VIRTIO_GPU_EVENT_DISPLAY: u32 = 1 << 0;
 
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_resource_create_blob {
     pub resource_id: u32,
@@ -456,7 +456,7 @@ pub struct virtio_gpu_resource_create_blob {
 }
 unsafe impl ByteValued for virtio_gpu_resource_create_blob {}
 
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_resource_map_blob {
     pub resource_id: u32,
@@ -465,7 +465,7 @@ pub struct virtio_gpu_resource_map_blob {
 }
 unsafe impl ByteValued for virtio_gpu_resource_map_blob {}
 
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_resource_unmap_blob {
     pub resource_id: u32,
@@ -473,7 +473,7 @@ pub struct virtio_gpu_resource_unmap_blob {
 }
 unsafe impl ByteValued for virtio_gpu_resource_unmap_blob {}
 
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_resp_map_info {
     pub hdr: virtio_gpu_ctrl_hdr,
@@ -482,7 +482,7 @@ pub struct virtio_gpu_resp_map_info {
 }
 unsafe impl ByteValued for virtio_gpu_resp_map_info {}
 
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_resource_assign_uuid {
     pub resource_id: u32,
@@ -499,7 +499,7 @@ pub struct virtio_gpu_resp_resource_uuid {
 unsafe impl ByteValued for virtio_gpu_resp_resource_uuid {}
 
 /* VIRTIO_GPU_CMD_SET_SCANOUT_BLOB */
-#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
+#[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes, PartialEq, Eq)]
 #[repr(C)]
 pub struct virtio_gpu_set_scanout_blob {
     pub r: virtio_gpu_rect,
@@ -525,7 +525,7 @@ pub const VIRTIO_GPU_FORMAT_A8B8G8R8_UNORM: u32 = 121;
 pub const VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM: u32 = 134;
 
 /// A virtio gpu command and associated metadata specific to each command.
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum GpuCommand {
     GetDisplayInfo,
     GetEdid(virtio_gpu_get_edid),
@@ -972,5 +972,230 @@ impl GpuResponse {
             GpuResponse::ErrInvalidContextId => VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID,
             GpuResponse::ErrInvalidParameter => VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    #[test]
+    fn test_gpu_response_display() {
+        let err_rutabaga = GpuResponse::ErrRutabaga(RutabagaError::InvalidContextId);
+        assert_eq!(
+            format!("{}", err_rutabaga),
+            "renderer error: invalid context id"
+        );
+
+        let err_scanout = GpuResponse::ErrScanout { num_scanouts: 3 };
+        assert_eq!(format!("{}", err_scanout), "non-zero scanout: 3");
+    }
+
+    #[test]
+    fn test_invalid_type_error() {
+        let error = GpuCommandDecodeError::InvalidType(42);
+        assert_eq!(format!("{}", error), "invalid command type (42)");
+    }
+
+    // Test io_error conversion to gpu command decode error
+    #[test]
+    fn test_io_error() {
+        let io_error = io::Error::new(io::ErrorKind::Other, "Test IO error");
+        let gpu_error: GpuCommandDecodeError = io_error.into();
+        match gpu_error {
+            GpuCommandDecodeError::IO(_) => (),
+            _ => panic!("Expected IO error"),
+        }
+    }
+
+    //Test vhu_error conversion to gpu command decode/encode error
+    #[test]
+    fn test_vhu_gpu_error() {
+        let vhu_gpu_error = vhu_gpu::Error::DescriptorReadFailed;
+        let gpu_error: GpuCommandDecodeError = vhu_gpu_error.into();
+        match gpu_error {
+            GpuCommandDecodeError::DescriptorReadFailed => (),
+            _ => panic!("Expected DescriptorReadFailed error"),
+        }
+        let vhu_gpu_error = vhu_gpu::Error::DescriptorWriteFailed;
+        let gpu_error: GpuResponseEncodeError = vhu_gpu_error.into();
+        match gpu_error {
+            GpuResponseEncodeError::DescriptorWriteFailed => (),
+            _ => panic!("Expected DescriptorWriteFailed error"),
+        }
+    }
+
+    #[test]
+    fn test_debug() {
+        let get_display_info = GpuCommand::GetDisplayInfo;
+        let get_edid = GpuCommand::GetEdid(virtio_gpu_get_edid::default());
+        let resource_create_2d =
+            GpuCommand::ResourceCreate2d(virtio_gpu_resource_create_2d::default());
+        let resource_unref = GpuCommand::ResourceUnref(virtio_gpu_resource_unref::default());
+        let set_scanout = GpuCommand::SetScanout(virtio_gpu_set_scanout::default());
+        let set_scanout_blob = GpuCommand::SetScanoutBlob(virtio_gpu_set_scanout_blob::default());
+        let resource_flush = GpuCommand::ResourceFlush(virtio_gpu_resource_flush::default());
+        let transfer_to_host_2d =
+            GpuCommand::TransferToHost2d(virtio_gpu_transfer_to_host_2d::default());
+        //let resource_attach_backing = GpuCommand::ResourceAttachBacking(virtio_gpu_resource_attach_backing::default(), vec![1]);
+        let resource_detach_backing =
+            GpuCommand::ResourceDetachBacking(virtio_gpu_resource_detach_backing::default());
+        let get_capset_info = GpuCommand::GetCapsetInfo(virtio_gpu_get_capset_info::default());
+        let get_capset = GpuCommand::GetCapset(virtio_gpu_get_capset::default());
+        let ctx_create = GpuCommand::CtxCreate(virtio_gpu_ctx_create::default());
+        let ctx_destroy = GpuCommand::CtxDestroy(virtio_gpu_ctx_destroy::default());
+        let ctx_attach_resource = GpuCommand::CtxAttachResource(virtio_gpu_ctx_resource::default());
+        let ctx_detach_resource = GpuCommand::CtxDetachResource(virtio_gpu_ctx_resource::default());
+        let resource_create_3d =
+            GpuCommand::ResourceCreate3d(virtio_gpu_resource_create_3d::default());
+        let transfer_to_host_3d =
+            GpuCommand::TransferToHost3d(virtio_gpu_transfer_host_3d::default());
+        let transfer_from_host_3d =
+            GpuCommand::TransferFromHost3d(virtio_gpu_transfer_host_3d::default());
+        let cmd_submit_3d = GpuCommand::CmdSubmit3d(virtio_gpu_cmd_submit::default());
+        let resource_create_blob =
+            GpuCommand::ResourceCreateBlob(virtio_gpu_resource_create_blob::default());
+        let resource_map_blob =
+            GpuCommand::ResourceMapBlob(virtio_gpu_resource_map_blob::default());
+        let resource_unmap_blob =
+            GpuCommand::ResourceUnmapBlob(virtio_gpu_resource_unmap_blob::default());
+        let update_cursor = GpuCommand::UpdateCursor(virtio_gpu_update_cursor::default());
+        let move_cursor = GpuCommand::MoveCursor(virtio_gpu_update_cursor::default());
+        let resource_assign_uuid =
+            GpuCommand::ResourceAssignUuid(virtio_gpu_resource_assign_uuid::default());
+
+        let expected_debug_output_display = "GetDisplayInfo";
+        let expected_debug_output_edid = "GetEdid";
+        let expected_debug_output_create2d = "ResourceCreate2d";
+        let expected_debug_output_unref = "ResourceUnref";
+        let expected_debug_output_scanout = "SetScanout";
+        let expected_debug_output_scanout_blob = "SetScanoutBlob";
+        let expected_debug_output_flush = "ResourceFlush";
+        let expected_debug_output_transfer_to_host_2d = "TransferToHost2d";
+        let expected_debug_output_detach_backing = "ResourceDetachBacking";
+        let expected_debug_output_get_capset_info = "GetCapsetInfo";
+        let expected_debug_output_get_capset = "GetCapset";
+        let expected_debug_output_ctx_create = "CtxCreate";
+        let expected_debug_output_ctx_destroy = "CtxDestroy";
+        let expected_debug_output_ctx_attach_resource = "CtxAttachResource";
+        let expected_debug_output_ctx_detach_resource = "CtxDetachResource";
+        let expected_debug_output_resource_create_3d = "ResourceCreate3d";
+        let expected_debug_output_transfer_to_host_3d = "TransferToHost3d";
+        let expected_debug_output_transfer_from_host_3d = "TransferFromHost3d";
+        let expected_debug_output_cmd_submit_3d = "CmdSubmit3d";
+        let expected_debug_output_create_blob = "ResourceCreateBlob";
+        let expected_debug_output_map_blob = "ResourceMapBlob";
+        let expected_debug_output_unmap_blob = "ResourceUnmapBlob";
+        let expected_debug_output_update_cursor = "UpdateCursor";
+        let expected_debug_output_move_cursor = "MoveCursor";
+        let expected_debug_output_assign_uuid = "ResourceAssignUuid";
+
+        assert_eq!(
+            format!("{:?}", get_display_info),
+            expected_debug_output_display
+        );
+        assert_eq!(format!("{:?}", get_edid), expected_debug_output_edid);
+        assert_eq!(
+            format!("{:?}", resource_create_2d),
+            expected_debug_output_create2d
+        );
+        assert_eq!(format!("{:?}", resource_unref), expected_debug_output_unref);
+        assert_eq!(format!("{:?}", set_scanout), expected_debug_output_scanout);
+        assert_eq!(
+            format!("{:?}", set_scanout_blob),
+            expected_debug_output_scanout_blob
+        );
+        assert_eq!(format!("{:?}", resource_flush), expected_debug_output_flush);
+        assert_eq!(
+            format!("{:?}", transfer_to_host_2d),
+            expected_debug_output_transfer_to_host_2d
+        );
+        assert_eq!(
+            format!("{:?}", resource_detach_backing),
+            expected_debug_output_detach_backing
+        );
+        assert_eq!(
+            format!("{:?}", get_capset_info),
+            expected_debug_output_get_capset_info
+        );
+        assert_eq!(
+            format!("{:?}", get_capset),
+            expected_debug_output_get_capset
+        );
+        assert_eq!(
+            format!("{:?}", ctx_create),
+            expected_debug_output_ctx_create
+        );
+        assert_eq!(
+            format!("{:?}", ctx_destroy),
+            expected_debug_output_ctx_destroy
+        );
+        assert_eq!(
+            format!("{:?}", ctx_attach_resource),
+            expected_debug_output_ctx_attach_resource
+        );
+        assert_eq!(
+            format!("{:?}", ctx_detach_resource),
+            expected_debug_output_ctx_detach_resource
+        );
+        assert_eq!(
+            format!("{:?}", resource_create_3d),
+            expected_debug_output_resource_create_3d
+        );
+        assert_eq!(
+            format!("{:?}", transfer_to_host_3d),
+            expected_debug_output_transfer_to_host_3d
+        );
+        assert_eq!(
+            format!("{:?}", transfer_from_host_3d),
+            expected_debug_output_transfer_from_host_3d
+        );
+        assert_eq!(
+            format!("{:?}", cmd_submit_3d),
+            expected_debug_output_cmd_submit_3d
+        );
+        assert_eq!(
+            format!("{:?}", resource_create_blob),
+            expected_debug_output_create_blob
+        );
+        assert_eq!(
+            format!("{:?}", resource_map_blob),
+            expected_debug_output_map_blob
+        );
+        assert_eq!(
+            format!("{:?}", resource_unmap_blob),
+            expected_debug_output_unmap_blob
+        );
+        assert_eq!(
+            format!("{:?}", update_cursor),
+            expected_debug_output_update_cursor
+        );
+        assert_eq!(
+            format!("{:?}", move_cursor),
+            expected_debug_output_move_cursor
+        );
+        assert_eq!(
+            format!("{:?}", resource_assign_uuid),
+            expected_debug_output_assign_uuid
+        );
+
+        let bytes = "test_debug".as_bytes();
+        let original = virtio_gpu_ctx_create {
+            debug_name: {
+                let mut debug_name = [0; 64];
+                debug_name[..bytes.len()].copy_from_slice(&bytes);
+                debug_name
+            },
+            context_init: 0,
+            nlen: 10,
+        };
+
+        let debug_string = format!("{:?}", original);
+
+        assert_eq!(
+            debug_string,
+            "virtio_gpu_ctx_create { debug_name: \"test_debug\" }"
+        );
     }
 }

@@ -55,7 +55,7 @@ fn sglist_to_rutabaga_iovecs(
     Ok(rutabaga_iovecs)
 }
 
-pub trait VirtioGpuBackend {
+pub trait VirtioGpu {
     fn update_scanout_resource(
         &mut self,
         gpu_backend: &mut GpuBackend,
@@ -255,11 +255,12 @@ pub struct FenceState {
     completed_fences: BTreeMap<VirtioGpuRing, u64>,
 }
 
-struct VirtioGpuResource {
-    size: u64,
-    shmem_offset: Option<u64>,
-    rutabaga_external_mapping: bool,
-    scanout_data: Option<VirtioScanoutBlobData>,
+#[derive(Default)]
+pub struct VirtioGpuResource {
+    pub size: u64,
+    pub shmem_offset: Option<u64>,
+    pub rutabaga_external_mapping: bool,
+    pub scanout_data: Option<VirtioScanoutBlobData>,
 }
 
 impl VirtioGpuResource {
@@ -276,9 +277,9 @@ impl VirtioGpuResource {
 }
 
 pub struct RutabagaVirtioGpu {
-    rutabaga: Rutabaga,
-    resources: BTreeMap<u32, VirtioGpuResource>,
-    fence_state: Arc<Mutex<FenceState>>,
+    pub(crate) rutabaga: Rutabaga,
+    pub(crate) resources: BTreeMap<u32, VirtioGpuResource>,
+    pub(crate) fence_state: Arc<Mutex<FenceState>>,
 }
 
 impl RutabagaVirtioGpu {
@@ -420,7 +421,7 @@ impl RutabagaVirtioGpu {
     }
 }
 
-impl VirtioGpuBackend for RutabagaVirtioGpu {
+impl VirtioGpu for RutabagaVirtioGpu {
     fn force_ctx_0(&self) {
         self.rutabaga.force_ctx_0()
     }
@@ -849,5 +850,61 @@ impl VirtioGpuBackend for RutabagaVirtioGpu {
         debug!("resource id: {:?}", resource_id);
 
         Ok(OkNoData)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use super::{
+        RutabagaVirtioGpu, VirtioGpu, VirtioGpuResource, VirtioGpuRing, VirtioShmRegion,
+    };
+    use rutabaga_gfx::{
+        ResourceCreateBlob, RutabagaBuilder, RutabagaComponentType, RutabagaHandler,
+    };
+    use vm_memory::{GuestAddress, GuestMemoryMmap};
+
+    fn new_2d() -> RutabagaVirtioGpu {
+        let rutabaga = RutabagaBuilder::new(RutabagaComponentType::Rutabaga2D, 0)
+            .build(RutabagaHandler::new(|_| {}), None)
+            .unwrap();
+        RutabagaVirtioGpu {
+            rutabaga,
+            resources: Default::default(),
+            fence_state: Arc::new(Mutex::new(Default::default())),
+        }
+    }
+
+    #[test]
+    fn test_gpu_backend_success() {
+        let mut virtio_gpu = new_2d();
+        virtio_gpu.get_capset(0, 0).unwrap();
+        virtio_gpu.process_fence(VirtioGpuRing::Global, 0, 0, 0);
+    }
+
+    #[test]
+    fn test_gpu_backend_failure() {
+        let mut virtio_gpu = new_2d();
+        //rework, based on capset info
+        virtio_gpu.get_capset_info(0).unwrap_err();
+        let resource_create_blob = ResourceCreateBlob::default();
+        let vecs = vec![(GuestAddress(0), 10)];
+        let mem = &GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x1000)])
+            .expect("Failed to create guest memory");
+        virtio_gpu
+            .resource_create_blob(1, 1, resource_create_blob, vecs, mem)
+            .unwrap_err();
+
+        let shm_region = VirtioShmRegion::default();
+        let resource = VirtioGpuResource::default();
+        virtio_gpu.resources.insert(1, resource);
+        virtio_gpu.resource_map_blob(1, &shm_region, 0).unwrap_err();
+        virtio_gpu.resource_unmap_blob(1, &shm_region).unwrap_err();
+        let mut cmd_buf = vec![0; 10];
+        let fence_ids: Vec<u64> = Vec::with_capacity(0);
+        virtio_gpu
+            .submit_command(0, &mut cmd_buf[..], &fence_ids)
+            .unwrap_err();
     }
 }
