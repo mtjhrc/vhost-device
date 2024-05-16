@@ -31,7 +31,7 @@ use vmm_sys_util::epoll::EventSet;
 use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
 
 use super::protocol::{virtio_gpu_ctrl_hdr, GpuCommand, GpuResponse, VirtioGpuResult};
-use super::virt_gpu::{VirtioGpu, VirtioGpuRing, VirtioShmRegion};
+use super::virt_gpu::{RutabagaVirtioGpu, VirtioGpuBackend, VirtioGpuRing, VirtioShmRegion};
 use crate::protocol::GpuResponse::ErrUnspec;
 use crate::protocol::{VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX};
 use crate::{protocol, virtio_gpu::*, GpuConfig};
@@ -120,7 +120,7 @@ impl VhostUserGpuBackend {
 
     fn process_gpu_command(
         &mut self,
-        virtio_gpu: &mut VirtioGpu,
+        virtio_gpu: &mut RutabagaVirtioGpu,
         mem: &GuestMemoryMmap,
         hdr: virtio_gpu_ctrl_hdr,
         cmd: GpuCommand,
@@ -378,7 +378,7 @@ impl VhostUserGpuBackend {
 
     fn process_queue_chain(
         &mut self,
-        virtio_gpu: &mut VirtioGpu,
+        virtio_gpu: &mut RutabagaVirtioGpu,
         mem: &GuestMemoryMmap,
         vring: &VringRwLock,
         head_index: u16,
@@ -471,7 +471,11 @@ impl VhostUserGpuBackend {
     }
 
     /// Process the requests in the vring and dispatch replies
-    fn process_queue(&mut self, virtio_gpu: &mut VirtioGpu, vring: &VringRwLock) -> Result<()> {
+    fn process_queue(
+        &mut self,
+        virtio_gpu: &mut RutabagaVirtioGpu,
+        vring: &VringRwLock,
+    ) -> Result<()> {
         let mem = self.mem.as_ref().unwrap().memory().into_inner();
         let desc_chains: Vec<_> = vring
             .get_mut()
@@ -514,7 +518,7 @@ impl VhostUserGpuBackend {
     fn handle_queue_event(
         &mut self,
         device_event: u16,
-        virtio_gpu: &mut VirtioGpu,
+        virtio_gpu: &mut RutabagaVirtioGpu,
         vring: &VringRwLock,
     ) -> IoResult<()> {
         match device_event {
@@ -599,7 +603,7 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
     ) -> IoResult<()> {
         // We use thread_local here because it is the easiest way to handle VirtioGpu being !Send
         thread_local! {
-            static VIRTIO_GPU_REF: RefCell<Option<VirtioGpu>> = RefCell::new(None);
+            static VIRTIO_GPU_REF: RefCell<Option<RutabagaVirtioGpu>> = RefCell::new(None);
         }
 
         debug!("Handle event called");
@@ -615,7 +619,7 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
                 // VirtioGpu::new can be called once per process (otherwise it panics),
                 // so if somehow another thread accidentally wants to create another gpu here,
                 // it will panic anyway
-                VirtioGpu::new(vring)
+                RutabagaVirtioGpu::new(vring)
             });
             self.handle_queue_event(device_event, virtio_gpu, vring)
         })?;

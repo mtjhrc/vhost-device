@@ -101,13 +101,13 @@ impl VirtioGpuResource {
     }
 }
 
-pub struct VirtioGpu {
+pub struct RutabagaVirtioGpu {
     rutabaga: Rutabaga,
     resources: BTreeMap<u32, VirtioGpuResource>,
     fence_state: Arc<Mutex<FenceState>>,
 }
 
-impl VirtioGpu {
+impl RutabagaVirtioGpu {
     fn create_fence_handler(
         queue_ctl: VringRwLock,
         fence_state: Arc<Mutex<FenceState>>,
