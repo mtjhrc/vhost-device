@@ -31,7 +31,7 @@ use vmm_sys_util::epoll::EventSet;
 use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
 
 use super::protocol::{virtio_gpu_ctrl_hdr, GpuCommand, GpuResponse, VirtioGpuResult};
-use super::virt_gpu::{VirtioGpu, VirtioGpuRing, VirtioShmRegion};
+use super::virt_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing, VirtioShmRegion};
 use crate::protocol::GpuResponse::ErrUnspec;
 use crate::protocol::{VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX};
 use crate::{protocol, virtio_gpu::*, GpuConfig};
@@ -120,7 +120,7 @@ impl VhostUserGpuBackend {
 
     fn process_gpu_command(
         &mut self,
-        virtio_gpu: &mut VirtioGpu,
+        virtio_gpu: &mut RutabagaVirtioGpu,
         mem: &GuestMemoryMmap,
         hdr: virtio_gpu_ctrl_hdr,
         cmd: GpuCommand,
@@ -290,9 +290,7 @@ impl VhostUserGpuBackend {
 
                 virtio_gpu.transfer_read(ctx_id, resource_id, transfer, None)
             }
-            GpuCommand::CmdSubmit3d(_info) => {
-                todo!()
-            }
+            GpuCommand::CmdSubmit3d(_info) => Ok(GpuResponse::OkNoData),
             GpuCommand::ResourceCreateBlob(_info) => {
                 todo!()
             }
@@ -378,7 +376,7 @@ impl VhostUserGpuBackend {
 
     fn process_queue_chain(
         &mut self,
-        virtio_gpu: &mut VirtioGpu,
+        virtio_gpu: &mut RutabagaVirtioGpu,
         mem: &GuestMemoryMmap,
         vring: &VringRwLock,
         head_index: u16,
@@ -471,7 +469,11 @@ impl VhostUserGpuBackend {
     }
 
     /// Process the requests in the vring and dispatch replies
-    fn process_queue(&mut self, virtio_gpu: &mut VirtioGpu, vring: &VringRwLock) -> Result<()> {
+    fn process_queue(
+        &mut self,
+        virtio_gpu: &mut RutabagaVirtioGpu,
+        vring: &VringRwLock,
+    ) -> Result<()> {
         let mem = self.mem.as_ref().unwrap().memory().into_inner();
         let desc_chains: Vec<_> = vring
             .get_mut()
@@ -514,7 +516,7 @@ impl VhostUserGpuBackend {
     fn handle_queue_event(
         &mut self,
         device_event: u16,
-        virtio_gpu: &mut VirtioGpu,
+        virtio_gpu: &mut RutabagaVirtioGpu,
         vring: &VringRwLock,
     ) -> IoResult<()> {
         match device_event {
@@ -599,7 +601,7 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
     ) -> IoResult<()> {
         // We use thread_local here because it is the easiest way to handle VirtioGpu being !Send
         thread_local! {
-            static VIRTIO_GPU_REF: RefCell<Option<VirtioGpu>> = RefCell::new(None);
+            static VIRTIO_GPU_REF: RefCell<Option<RutabagaVirtioGpu>> = RefCell::new(None);
         }
 
         debug!("Handle event called");
@@ -615,7 +617,7 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
                 // VirtioGpu::new can be called once per process (otherwise it panics),
                 // so if somehow another thread accidentally wants to create another gpu here,
                 // it will panic anyway
-                VirtioGpu::new(vring)
+                RutabagaVirtioGpu::new(vring)
             });
             self.handle_queue_event(device_event, virtio_gpu, vring)
         })?;
@@ -645,13 +647,32 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
 
 #[cfg(test)]
 mod tests {
-    use std::mem::size_of;
+    use rutabaga_gfx::{RutabagaBuilder, RutabagaComponentType, RutabagaHandler};
+    use std::{
+        collections::BTreeMap,
+        mem::size_of,
+        sync::{Arc, Mutex},
+    };
     use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
     use virtio_bindings::bindings::virtio_ring::{VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
-    use virtio_queue::{mock::MockSplitQueue, Descriptor, Queue};
-    use vm_memory::{Address, ByteValued, Bytes, GuestAddress, GuestMemoryAtomic, GuestMemoryMmap};
+    use virtio_queue::{mock::MockSplitQueue, Descriptor, DescriptorChain, Queue};
+    use vm_memory::{
+        Address, ByteValued, Bytes, GuestAddress, GuestMemoryAtomic, GuestMemoryLoadGuard,
+        GuestMemoryMmap,
+    };
+
+    use self::protocol::{
+        virtio_gpu_cmd_submit, virtio_gpu_ctrl_hdr, virtio_gpu_ctx_create, virtio_gpu_ctx_destroy,
+        virtio_gpu_ctx_resource, virtio_gpu_get_capset, virtio_gpu_get_capset_info,
+        virtio_gpu_resource_assign_uuid, virtio_gpu_resource_attach_backing,
+        virtio_gpu_resource_create_2d, virtio_gpu_resource_create_3d,
+        virtio_gpu_resource_detach_backing, virtio_gpu_resource_flush, virtio_gpu_resource_unref,
+        virtio_gpu_transfer_host_3d, virtio_gpu_transfer_to_host_2d,
+    };
 
     use super::*;
+
+    type GpuDescriptorChain = DescriptorChain<GuestMemoryLoadGuard<GuestMemoryMmap<()>>>;
 
     const SOCKET_PATH: &str = "vgpu.socket";
 
@@ -687,6 +708,8 @@ mod tests {
             GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap(),
         );
         let vring = VringRwLock::new(mem.clone(), 16).unwrap();
+        vring.set_queue_info(0x100, 0x200, 0x300).unwrap();
+        vring.set_queue_ready(true);
 
         (backend, mem, vring)
     }
@@ -696,27 +719,27 @@ mod tests {
         mut next_addr: u64,
         mem: &GuestMemoryLoadGuard<GuestMemoryMmap<()>>,
         buf: &mut Vec<u8>,
+        cmd_type: u32,
     ) -> Vec<Descriptor> {
         let mut descriptors = Vec::new();
         let mut index = 0;
 
-        // Out header descriptor
-        let out_hdr = VirtioGpuOutHdr {
-            a: 0x10,
-            b: 0x11,
-            c: 0x20,
+        // Gpu header descriptor
+        let ctrl_hdr = virtio_gpu_ctrl_hdr {
+            type_: cmd_type,
+            ..virtio_gpu_ctrl_hdr::default()
         };
 
         let desc_out = Descriptor::new(
             next_addr,
-            size_of::<VirtioGpuOutHdr>() as u32,
+            size_of::<virtio_gpu_ctrl_hdr>() as u32,
             VRING_DESC_F_NEXT as u16,
             index + 1,
         );
         next_addr += desc_out.len() as u64;
         index += 1;
 
-        mem.write_obj::<VirtioGpuOutHdr>(out_hdr, desc_out.addr())
+        mem.write_obj::<virtio_gpu_ctrl_hdr>(ctrl_hdr, desc_out.addr())
             .unwrap();
         descriptors.push(desc_out);
 
@@ -746,13 +769,13 @@ mod tests {
     }
 
     // Prepares a single chain of descriptors
-    fn prepare_desc_chain(buf: &mut Vec<u8>) -> (VhostUserGpuBackend, VringRwLock) {
+    fn prepare_desc_chain(buf: &mut Vec<u8>, cmd_type: u32) -> (VhostUserGpuBackend, VringRwLock) {
         let (mut backend, mem, vring) = init();
         let mem_handle = mem.memory();
         let vq = MockSplitQueue::new(&*mem_handle, 16);
         let next_addr = vq.desc_table().total_size() + 0x100;
 
-        let descriptors = prepare_descriptors(next_addr, &mem_handle, buf);
+        let descriptors = prepare_descriptors(next_addr, &mem_handle, buf, cmd_type);
 
         vq.build_desc_chain(&descriptors).unwrap();
 
@@ -781,12 +804,13 @@ mod tests {
     fn prepare_desc_chains(
         mem: &GuestMemoryAtomic<GuestMemoryMmap>,
         buf: &mut Vec<u8>,
+        cmd_type: u32,
     ) -> GpuDescriptorChain {
         let mem_handle = mem.memory();
         let vq = MockSplitQueue::new(&*mem_handle, 16);
         let next_addr = vq.desc_table().total_size() + 0x100;
 
-        let descriptors = prepare_descriptors(next_addr, &mem_handle, buf);
+        let descriptors = prepare_descriptors(next_addr, &mem_handle, buf, cmd_type);
 
         for (idx, desc) in descriptors.iter().enumerate() {
             vq.desc_table().store(idx as u16, *desc).unwrap();
@@ -811,42 +835,148 @@ mod tests {
             .unwrap()
     }
 
-    #[test]
-    fn process_requests_no_desc() {
-        let (mut backend, _, vring) = init();
-
-        // Descriptor chain size zero, shouldn't fail
-        // backend
-        //     .process_requests(Vec::<GpuDescriptorChain>::new(), &vring)
-        //     .unwrap();
+    fn new_2d() -> RutabagaVirtioGpu {
+        let rutabaga = RutabagaBuilder::new(RutabagaComponentType::Rutabaga2D, 0)
+            .build(RutabagaHandler::new(|_| {}), None)
+            .unwrap();
+        RutabagaVirtioGpu {
+            rutabaga,
+            resources: BTreeMap::default(),
+            fence_state: Arc::new(Mutex::new(Default::default())),
+        }
     }
 
     #[test]
-    fn process_request_single() {
-        // Single valid descriptor
+    fn test_process_queue_chain() {
+        let (mut backend, mem, _) = init();
+
+        backend.update_memory(mem.clone()).unwrap();
+
+        let vring = VringRwLock::new(mem.clone(), 0x1000).unwrap();
+        vring.set_queue_info(0x100, 0x200, 0x300).unwrap();
+        vring.set_queue_ready(true);
+
         let mut buf: Vec<u8> = vec![0; 30];
-        let (mut backend, vring) = prepare_desc_chain(&mut buf);
-        backend.process_queue(&vring).unwrap();
+        let command_types = [
+            VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
+            VIRTIO_GPU_CMD_RESOURCE_UNREF,
+            VIRTIO_GPU_CMD_SET_SCANOUT,
+            VIRTIO_GPU_CMD_SET_SCANOUT_BLOB,
+            VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+            VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
+            VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
+            VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING,
+            VIRTIO_GPU_CMD_GET_CAPSET,
+            VIRTIO_GPU_CMD_GET_CAPSET_INFO,
+            VIRTIO_GPU_CMD_GET_EDID,
+            VIRTIO_GPU_CMD_CTX_CREATE,
+            VIRTIO_GPU_CMD_CTX_DESTROY,
+            VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE,
+            VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE,
+            VIRTIO_GPU_CMD_RESOURCE_CREATE_3D,
+            VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D,
+            VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
+            VIRTIO_GPU_CMD_SUBMIT_3D,
+            VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB,
+            VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB,
+            VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB,
+            VIRTIO_GPU_CMD_UPDATE_CURSOR,
+            VIRTIO_GPU_CMD_MOVE_CURSOR,
+            VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID,
+        ];
+        for cmd_type in command_types {
+            let desc_chain = prepare_desc_chains(&mem, &mut buf, cmd_type);
+            let mem = mem.memory().into_inner();
+
+            let mut reader = desc_chain
+                .clone()
+                .reader(&mem)
+                .map_err(Error::CreateReader)
+                .unwrap();
+            let mut writer = desc_chain
+                .clone()
+                .writer(&mem)
+                .map_err(Error::CreateWriter)
+                .unwrap();
+
+            let mut virtio_gpu = new_2d();
+            let mut signal_used_queue = true;
+
+            backend
+                .process_queue_chain(
+                    &mut virtio_gpu,
+                    &mem,
+                    &vring,
+                    desc_chain.head_index(),
+                    &mut reader,
+                    &mut writer,
+                    &mut signal_used_queue,
+                )
+                .unwrap();
+        }
     }
 
     #[test]
-    fn process_requests_multi() {
-        // Multiple valid descriptors
-        let (mut backend, mem, vring) = init();
+    fn test_process_queue() {
+        // Test process_queue functionality
+        let mut buf: Vec<u8> = vec![0; 30];
+        let (mut backend, vring) = prepare_desc_chain(&mut buf, 0);
 
-        let mut bufs: Vec<Vec<u8>> = vec![vec![0; 30]; 6];
-        let desc_chains = vec![
-            prepare_desc_chains(&mem, &mut bufs[0]),
-            prepare_desc_chains(&mem, &mut bufs[1]),
-            prepare_desc_chains(&mem, &mut bufs[2]),
-            prepare_desc_chains(&mem, &mut bufs[3]),
-            prepare_desc_chains(&mem, &mut bufs[4]),
-            prepare_desc_chains(&mem, &mut bufs[5]),
+        let mut virtio_gpu = new_2d();
+        backend.process_queue(&mut virtio_gpu, &vring).unwrap();
+    }
+
+    #[test]
+    fn test_process_gpu_command() {
+        let (mut backend, mem, _) = init();
+
+        backend.mem = Some(mem.clone());
+        let mem = mem.memory().into_inner();
+        let mut virtio_gpu = new_2d();
+        let hdr = virtio_gpu_ctrl_hdr::default();
+        let gpu_cmd = [
+            GpuCommand::ResourceCreate2d(virtio_gpu_resource_create_2d::default()),
+            GpuCommand::ResourceUnref(virtio_gpu_resource_unref::default()),
+            GpuCommand::ResourceFlush(virtio_gpu_resource_flush::default()),
+            GpuCommand::GetCapset(virtio_gpu_get_capset::default()),
+            GpuCommand::ResourceCreate3d(virtio_gpu_resource_create_3d::default()),
+            GpuCommand::CmdSubmit3d(virtio_gpu_cmd_submit::default()),
         ];
+        for cmd in gpu_cmd {
+            backend
+                .process_gpu_command(&mut virtio_gpu, &mem, hdr, cmd)
+                .unwrap();
+        }
+    }
 
-        // backend
-        //     .process_requests(desc_chains.clone(), &vring)
-        //     .unwrap();
+    #[test]
+    fn test_process_gpu_command_failure() {
+        let (mut backend, mem, _) = init();
+
+        backend.mem = Some(mem.clone());
+        let mem = mem.memory().into_inner();
+        let mut virtio_gpu = new_2d();
+        let hdr = virtio_gpu_ctrl_hdr::default();
+        let gpu_cmd = [
+            GpuCommand::TransferToHost2d(virtio_gpu_transfer_to_host_2d::default()),
+            GpuCommand::TransferToHost3d(virtio_gpu_transfer_host_3d::default()),
+            GpuCommand::ResourceDetachBacking(virtio_gpu_resource_detach_backing::default()),
+            GpuCommand::GetCapsetInfo(virtio_gpu_get_capset_info::default()),
+            GpuCommand::CtxCreate(virtio_gpu_ctx_create::default()),
+            GpuCommand::CtxAttachResource(virtio_gpu_ctx_resource::default()),
+            GpuCommand::CtxDetachResource(virtio_gpu_ctx_resource::default()),
+            GpuCommand::CtxDestroy(virtio_gpu_ctx_destroy::default()),
+            GpuCommand::ResourceAssignUuid(virtio_gpu_resource_assign_uuid::default()),
+            GpuCommand::ResourceAttachBacking(
+                virtio_gpu_resource_attach_backing::default(),
+                [(GuestAddress(0), 0x1000)].to_vec(),
+            ),
+        ];
+        for cmd in gpu_cmd {
+            backend
+                .process_gpu_command(&mut virtio_gpu, &mem, hdr, cmd)
+                .unwrap_err();
+        }
     }
 
     #[test]
@@ -856,9 +986,11 @@ mod tests {
 
         assert_eq!(backend.num_queues(), NUM_QUEUES);
         assert_eq!(backend.max_queue_size(), QUEUE_SIZE);
-        assert_eq!(backend.features(), 0x171000000);
-        assert_eq!(backend.protocol_features(), VhostUserProtocolFeatures::MQ);
-
+        assert_eq!(backend.features(), 0x1017100001B);
+        assert_eq!(
+            backend.protocol_features(),
+            VhostUserProtocolFeatures::CONFIG | VhostUserProtocolFeatures::MQ
+        );
         assert_eq!(backend.queues_per_thread(), vec![0xffff_ffff]);
         assert_eq!(backend.get_config(0, 0), vec![]);
 
@@ -901,5 +1033,62 @@ mod tests {
         // Hit the non-loop part
         backend.set_event_idx(false);
         backend.handle_event(0, EventSet::IN, &[vring], 0).unwrap();
+    }
+
+    #[test]
+    fn gpu_command_encode() {
+        let (mut backend, mem, _) = init();
+        backend.update_memory(mem.clone()).unwrap();
+
+        let mut buf: Vec<u8> = vec![0; 2048];
+        let desc_chain = prepare_desc_chains(&mem, &mut buf, 0);
+
+        let mem = mem.memory();
+
+        let mut writer = desc_chain
+            .clone()
+            .writer(&mem)
+            .map_err(Error::CreateWriter)
+            .unwrap();
+
+        let resp = GpuResponse::OkNoData;
+        let resp_ok_nodata = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_ok_nodata, 24);
+
+        let resp = GpuResponse::OkDisplayInfo(vec![(0, 0, false)]);
+        let resp_display_info = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_display_info, 408);
+
+        let edid_data: Box<[u8]> = Box::new([0u8; 1024]);
+        let resp = GpuResponse::OkEdid { blob: edid_data };
+        let resp_edid = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_edid, 1056);
+
+        let resp = GpuResponse::OkCapset(vec![]);
+        let resp_capset = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_capset, 24);
+
+        let resp = GpuResponse::OkCapsetInfo {
+            capset_id: 0,
+            version: 0,
+            size: 0,
+        };
+        let resp_capset = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_capset, 40);
+
+        let resp = GpuResponse::OkResourcePlaneInfo {
+            format_modifier: 0,
+            plane_info: vec![],
+        };
+        let resp_resource_planeinfo = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_resource_planeinfo, 72);
+
+        let resp = GpuResponse::OkResourceUuid { uuid: [0u8; 16] };
+        let resp_resource_uuid = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_resource_uuid, 40);
+
+        let resp = GpuResponse::OkMapInfo { map_info: 0 };
+        let resp_map_info = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_map_info, 32);
     }
 }

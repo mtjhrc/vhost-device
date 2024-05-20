@@ -78,8 +78,6 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use assert_matches::assert_matches;
-    use rutabaga_gfx::{RutabagaChannel, RutabagaFenceHandler, RUTABAGA_CHANNEL_TYPE_WAYLAND};
-    use std::env;
     use std::path::Path;
 
     use super::*;
@@ -97,8 +95,11 @@ mod tests {
         let socket_name = Path::new("vgpu.sock");
 
         let cmd_args = GpuArgs::from_args(socket_name);
-        let config = GpuConfig::try_from(cmd_args).unwrap();
+        let config = GpuConfig::try_from(cmd_args);
 
+        assert!(config.is_ok());
+
+        let config = config.unwrap();
         assert_eq!(config.get_socket_path(), socket_name);
     }
 

@@ -59,7 +59,7 @@ unsafe impl ByteValued for VirtioGpuCtrlHdr {}
 /* VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: create a 2d resource with a format */
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 #[repr(C)]
-pub struct virtioGpuResourceCreate2d {
+pub struct VirtioGpuResourceCreate2d {
     pub hdr: VirtioGpuCtrlHdr,
     pub resource_id: Le32,
     pub format: Le32,
@@ -128,7 +128,7 @@ impl From<InvalidCommandType> for crate::vhu_gpu::Error {
 
 impl std::error::Error for InvalidCommandType {}
 
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub enum GpuCommandType {
     GetDisplayInfo = 0x100,
     ResourceCreate2d = 0x101,
@@ -191,5 +191,142 @@ impl TryFrom<Le32> for GpuCommandType {
             VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID => Self::ResourceAssignUuid,
             other => return Err(InvalidCommandType(other)),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_virtio_gpu_config() {
+        // Test VirtioGpuConfig size
+        assert_eq!(std::mem::size_of::<VirtioGpuConfig>(), 16);
+    }
+
+    #[test]
+    fn test_virtio_gpu_ctrl_hdr() {
+        // Test VirtioGpuCtrlHdr size
+        assert_eq!(std::mem::size_of::<VirtioGpuCtrlHdr>(), 24);
+    }
+
+    #[test]
+    fn test_virtio_gpu_command_type_try_from() {
+        // Test conversion from u32 to GpuCommandType
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_GET_DISPLAY_INFO)),
+            Ok(GpuCommandType::GetDisplayInfo)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_GET_DISPLAY_INFO)),
+            Ok(GpuCommandType::GetDisplayInfo)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D)),
+            Ok(GpuCommandType::ResourceCreate2d)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_UNREF)),
+            Ok(GpuCommandType::ResourceUnref)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_SET_SCANOUT)),
+            Ok(GpuCommandType::SetScanout)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_SET_SCANOUT_BLOB)),
+            Ok(GpuCommandType::SetScanoutBlob)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_FLUSH)),
+            Ok(GpuCommandType::ResourceFlush)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D)),
+            Ok(GpuCommandType::TransferToHost2d)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING)),
+            Ok(GpuCommandType::ResourceAttachBacking)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING)),
+            Ok(GpuCommandType::ResourceDetachBacking)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_GET_CAPSET)),
+            Ok(GpuCommandType::GetCapset)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_GET_CAPSET_INFO)),
+            Ok(GpuCommandType::GetCapsetInfo)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_GET_EDID)),
+            Ok(GpuCommandType::GetEdid)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_CTX_CREATE)),
+            Ok(GpuCommandType::CtxCreate)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_CTX_DESTROY)),
+            Ok(GpuCommandType::CtxDestroy)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE)),
+            Ok(GpuCommandType::CtxAttachResource)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE)),
+            Ok(GpuCommandType::CtxDetachResource)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB)),
+            Ok(GpuCommandType::ResourceCreateBlob)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D)),
+            Ok(GpuCommandType::TransferToHost3d)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D)),
+            Ok(GpuCommandType::TransferFromHost3d)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_SUBMIT_3D)),
+            Ok(GpuCommandType::CmdSubmit3d)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB)),
+            Ok(GpuCommandType::ResourceMapBlob)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB)),
+            Ok(GpuCommandType::ResourceUnmapBlob)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_UPDATE_CURSOR)),
+            Ok(GpuCommandType::UpdateCursor)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_MOVE_CURSOR)),
+            Ok(GpuCommandType::MoveCursor)
+        );
+        assert_eq!(
+            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID)),
+            Ok(GpuCommandType::ResourceAssignUuid)
+        );
+        // Test an unknown command
+        assert!(matches!(
+            GpuCommandType::try_from(Le32::from(0x12345678)),
+            Err(InvalidCommandType(0x12345678))
+        ));
+    }
+
+    #[test]
+    fn test_invalid_command_type_display() {
+        let error = InvalidCommandType(42);
+        assert_eq!(format!("{}", error), "Invalid command type 42");
     }
 }
