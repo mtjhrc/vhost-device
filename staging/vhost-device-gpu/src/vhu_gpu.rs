@@ -180,7 +180,7 @@ impl VhostUserGpuBackend {
             GpuCommand::TransferToHost2d(info) => {
                 let resource_id = info.resource_id;
                 let transfer = Transfer3D::new_2d(info.r.x, info.r.y, info.r.width, info.r.height);
-                virtio_gpu.transfer_write(0, resource_id, transfer)
+                virtio_gpu.transfer_write(hdr.ctx_id, resource_id, transfer)
             }
             GpuCommand::ResourceAttachBacking(info, iovecs) => {
                 virtio_gpu.attach_backing(info.resource_id, mem, iovecs)
