@@ -20,8 +20,8 @@ libc = "0.2"
 log = "0.4"
 rutabaga_gfx = { path = "rutabaga_gfx", features = ["virgl_renderer"] }
 thiserror = "1.0"
-vhost = { git = "https://github.com/mtjhrc/vhost.git", package = "vhost", branch = "gpuwork-rebased", features = ["vhost-user-backend"] }
-vhost-user-backend = { git = "https://github.com/mtjhrc/vhost.git", package = "vhost-user-backend", branch = "gpuwork-rebased",  features = ["gpu-set-socket"] }
+vhost = { git = "https://github.com/mtjhrc/vhost.git", package = "vhost", branch = "gpu-socket-final", features = ["vhost-user-backend"] }
+vhost-user-backend = { git = "https://github.com/mtjhrc/vhost.git", package = "vhost-user-backend", branch = "gpu-socket-final",  features = ["gpu-socket"] }
 virtio-bindings = "0.2.2"
 virtio-queue = "0.12.0"
 vm-memory = "0.14.0"
@@ -32,4 +32,4 @@ zerocopy-derive = "0.6.3"
 [dev-dependencies]
 assert_matches = "1.5"
 virtio-queue = { version = "0.12", features = ["test-utils"] }
-vm-memory = { version = "0.13.1", features = ["backend-mmap", "backend-atomic"] }
+vm-memory = { version = "0.14.0", features = ["backend-mmap", "backend-atomic"] }
