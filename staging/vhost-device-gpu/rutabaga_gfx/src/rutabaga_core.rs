@@ -210,6 +210,10 @@ pub trait RutabagaComponent {
     fn restore(&self, _directory: &str) -> RutabagaResult<()> {
         Err(RutabagaError::Unsupported)
     }
+
+    fn export_dmabuf_texture(&mut self, _resource_id: u32) -> RutabagaResult<DmabufTexture> {
+        Err(RutabagaError::Unsupported)
+    }
 }
 
 pub trait RutabagaContext {
@@ -877,6 +881,15 @@ impl Rutabaga {
             .ok_or(RutabagaError::InvalidComponent)?;
 
         component.export_fence(fence_id)
+    }
+
+    pub fn export_dmabuf_texture(&mut self, resource_id: u32) -> RutabagaResult<DmabufTexture> {
+        let component = self
+            .components
+            .get_mut(&self.default_component)
+            .ok_or(RutabagaError::InvalidComponent)?;
+
+        component.export_dmabuf_texture(resource_id)
     }
 
     /// Creates a context with the given `ctx_id` and `context_init` variable.

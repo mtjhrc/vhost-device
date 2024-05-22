@@ -25,9 +25,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use log::debug;
-use log::error;
-use log::warn;
+use log::{error, warn, debug};
 
 use crate::generated::virgl_debug_callback_bindings::*;
 use crate::generated::virgl_renderer_bindings::*;
@@ -760,6 +758,38 @@ impl RutabagaComponent for VirglRenderer {
         }
         #[cfg(not(virgl_renderer_unstable))]
         Err(RutabagaError::Unsupported)
+    }
+
+    fn export_dmabuf_texture(
+        &mut self,
+        resource_id: u32,
+    ) -> RutabagaResult<DmabufTexture> {
+        let mut info_ext = Default::default();
+        let ret =
+            unsafe { virgl_renderer_resource_get_info_ext(resource_id as i32, &mut info_ext) };
+        ret_to_res(ret)?;
+
+        let mut fd = -1;
+        let ret = unsafe { virgl_renderer_get_fd_for_texture(info_ext.base.tex_id, &mut fd) };
+        ret_to_res(ret)?;
+
+        if fd < 0 {
+            error!("virgl_renderer_get_fd_for_texture returned negative fd: {fd}");
+            return Err(RutabagaError::ComponentError(-1));
+        }
+
+        let info = DmabufTextureInfo {
+            width: info_ext.base.width,
+            height: info_ext.base.height,
+            stride: info_ext.base.stride,
+            flags: info_ext.base.flags,
+            fourcc: info_ext.base.drm_fourcc,
+            modifiers: info_ext.modifiers,
+        };
+
+        let fd = unsafe { SafeDescriptor::from_raw_descriptor(fd) };
+
+        Ok(DmabufTexture { info, fd })
     }
 
     #[allow(unused_variables)]

@@ -107,6 +107,22 @@ pub struct Resource3DInfo {
     pub guest_cpu_mappable: bool,
 }
 
+#[derive(Default, Clone, Debug)]
+pub struct DmabufTextureInfo {
+    pub width: u32,
+    pub height: u32,
+    pub stride: u32,
+    pub flags: u32,
+    pub fourcc: i32,
+
+    pub modifiers: u64,
+}
+
+pub struct DmabufTexture {
+    pub info: DmabufTextureInfo,
+    pub fd: SafeDescriptor,
+}
+
 /// A unique identifier for a device.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeviceId {
