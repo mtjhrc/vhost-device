@@ -43,7 +43,6 @@ use rutabaga_gfx::{
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, ThisError)]
-#[allow(dead_code)] //TODO: remove unused variants
 pub enum Error {
     #[error("Failed to handle event, didn't match EPOLLIN")]
     HandleEventNotEpollIn,
@@ -292,69 +291,6 @@ impl VhostUserGpuBackend {
             GpuCommand::ResourceCreateBlob(_info) => {
                 todo!()
             }
-            // GpuCommand::CmdSubmit3d(info) => {
-            //     if reader.available_bytes() != 0 {
-            //         let num_in_fences = info.num_in_fences as usize;
-            //         let cmd_size = info.size as usize;
-            //         let mut cmd_buf = vec![0; cmd_size];
-            //         let mut fence_ids: Vec<u64> = Vec::with_capacity(num_in_fences);
-
-            //         for _ in 0..num_in_fences {
-            //             match reader.read_obj::<u64>(desc_addr) {
-            //                 Ok(fence_id) => {
-            //                     fence_ids.push(fence_id);
-            //                 }
-            //                 Err(_) => return Err(GpuResponse::ErrUnspec),
-            //             }
-            //         }
-
-            //         if reader.read_exact(&mut cmd_buf[..]).is_ok() {
-            //             virtio_gpu.submit_command(hdr.ctx_id, &mut cmd_buf[..], &fence_ids)
-            //         } else {
-            //             Err(GpuResponse::ErrInvalidParameter)
-            //         }
-            //     } else {
-            //         // Silently accept empty command buffers to allow for
-            //         // benchmarking.
-            //         Ok(GpuResponse::OkNoData)
-            //     }
-            // }
-            // GpuCommand::ResourceCreateBlob(info) => {
-            //     let resource_id = info.resource_id;
-            //     let ctx_id = hdr.ctx_id;
-
-            //     let resource_create_blob = ResourceCreateBlob {
-            //         blob_mem: info.blob_mem,
-            //         blob_flags: info.blob_flags,
-            //         blob_id: info.blob_id,
-            //         size: info.size,
-            //     };
-
-            //     let entry_count = info.nr_entries;
-            //     if reader.available_bytes() == 0 && entry_count > 0 {
-            //         return Err(GpuResponse::ErrUnspec);
-            //     }
-
-            //     let mut vecs = Vec::with_capacity(entry_count as usize);
-            //     for _ in 0..entry_count {
-            //         match reader.read_obj::<virtio_gpu_mem_entry>(desc_addr) {
-            //             Ok(entry) => {
-            //                 let addr = GuestAddress(entry.addr);
-            //                 let len = entry.length as usize;
-            //                 vecs.push((addr, len))
-            //             }
-            //             Err(_) => return Err(GpuResponse::ErrUnspec),
-            //         }
-            //     }
-
-            //     virtio_gpu.resource_create_blob(
-            //         ctx_id,
-            //         resource_id,
-            //         resource_create_blob,
-            //         vecs,
-            //         mem,
-            //     )
-            // }
             GpuCommand::SetScanoutBlob(_info) => {
                 panic!("virtio_gpu: GpuCommand::SetScanoutBlob unimplemented");
             }

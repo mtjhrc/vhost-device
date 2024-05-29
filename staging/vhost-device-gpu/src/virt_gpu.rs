@@ -16,7 +16,6 @@ use rutabaga_gfx::{
     RUTABAGA_MAP_ACCESS_RW, RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK,
     RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
 };
-//use utils::eventfd::EventFd;
 use vhost::vhost_user::gpu_message::{
     VhostUserGpuCursorPos, VhostUserGpuCursorUpdate, VhostUserGpuEdidRequest, VhostUserGpuScanout,
     VhostUserGpuUpdate, VirtioGpuRespDisplayInfo,
@@ -24,7 +23,6 @@ use vhost::vhost_user::gpu_message::{
 use vhost_user_backend::{VringRwLock, VringT};
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 
-//use super::super::Queue as VirtQueue;
 use super::protocol::GpuResponse::*;
 use super::protocol::{
     virtio_gpu_rect, GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult,
@@ -335,10 +333,6 @@ impl RutabagaVirtioGpu {
     fn create_fence_handler(
         queue_ctl: VringRwLock,
         fence_state: Arc<Mutex<FenceState>>,
-        // interrupt_status: Arc<AtomicUsize>,
-        // interrupt_evt: EventFd,
-        // intc: Option<Arc<Mutex<Gic>>>,
-        // irq_line: Option<u32>,
     ) -> RutabagaFenceHandler {
         RutabagaFenceHandler::new(move |completed_fence: RutabagaFence| {
             debug!(
@@ -378,12 +372,6 @@ impl RutabagaVirtioGpu {
                         .map_err(Error::NotificationFailed)
                         .unwrap();
                     debug!("Notification sent");
-                    // interrupt_status.fetch_or(VIRTIO_MMIO_INT_VRING as usize, Ordering::SeqCst);
-                    // if let Some(intc) = &intc {
-                    //     intc.lock().unwrap().set_irq(irq_line.unwrap());
-                    // } else if let Err(e) = interrupt_evt.write(1) {
-                    //     error!("Failed to signal used queue: {:?}", e);
-                    // }
                 } else {
                     i += 1;
                 }
@@ -395,13 +383,7 @@ impl RutabagaVirtioGpu {
         })
     }
 
-    pub fn new(
-        queue_ctl: &VringRwLock,
-        // interrupt_status: Arc<AtomicUsize>,
-        // interrupt_evt: EventFd,
-        // intc: Option<Arc<Mutex<Gic>>>,
-        // irq_line: Option<u32>,
-    ) -> Self {
+    pub fn new(queue_ctl: &VringRwLock) -> Self {
         let xdg_runtime_dir = match env::var("XDG_RUNTIME_DIR") {
             Ok(dir) => dir,
             Err(_) => "/run/user/1000".to_string(),
@@ -430,19 +412,9 @@ impl RutabagaVirtioGpu {
         .set_use_glx(true)
         .set_use_surfaceless(true)
         .set_use_external_blob(true);
-        // TODO: figure out if we need this:
-        // this was part of libkrun modification and not upstream crossvm rutabaga
-        //.set_use_drm(true);
 
         let fence_state = Arc::new(Mutex::new(Default::default()));
-        let fence = Self::create_fence_handler(
-            queue_ctl.clone(),
-            fence_state.clone(),
-            // interrupt_status,
-            // interrupt_evt,
-            // intc,
-            // irq_line,
-        );
+        let fence = Self::create_fence_handler(queue_ctl.clone(), fence_state.clone());
         let rutabaga = builder
             .build(fence, None)
             .expect("Rutabaga initialization failed!");
