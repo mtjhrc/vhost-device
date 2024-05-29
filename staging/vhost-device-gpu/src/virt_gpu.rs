@@ -190,10 +190,10 @@ pub trait VirtioGpu {
     /// Can also be used to invalidate caches.
     fn transfer_read(
         &mut self,
-        _ctx_id: u32,
-        _resource_id: u32,
-        _transfer: Transfer3D,
-        _buf: Option<VolatileSlice>,
+        ctx_id: u32,
+        resource_id: u32,
+        transfer: Transfer3D,
+        buf: Option<VolatileSlice>,
     ) -> VirtioGpuResult;
 
     /// Attaches backing memory to the given resource, represented by a `Vec` of `(address, size)`
@@ -717,12 +717,20 @@ impl VirtioGpu for RutabagaVirtioGpu {
 
     fn transfer_read(
         &mut self,
-        _ctx_id: u32,
-        _resource_id: u32,
-        _transfer: Transfer3D,
-        _buf: Option<VolatileSlice>,
+        ctx_id: u32,
+        resource_id: u32,
+        transfer: Transfer3D,
+        buf: Option<VolatileSlice>,
     ) -> VirtioGpuResult {
-        panic!("virtio_gpu: transfer_read unimplemented");
+        let buf = buf.map(|vs| {
+            IoSliceMut::new(
+                // SAFETY: trivially safe
+                unsafe { std::slice::from_raw_parts_mut(vs.ptr_guard_mut().as_ptr(), vs.len()) },
+            )
+        });
+        self.rutabaga
+            .transfer_read(ctx_id, resource_id, transfer, buf)?;
+        Ok(OkNoData)
     }
 
     fn attach_backing(
