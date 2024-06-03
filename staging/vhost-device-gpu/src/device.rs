@@ -5,44 +5,50 @@
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
 use log::{debug, error, trace, warn};
-use std::cell::RefCell;
 use std::{
+    cell::RefCell,
     convert,
     io::{self, Result as IoResult},
 };
-use virtio_bindings::virtio_gpu::{VIRTIO_GPU_F_EDID, VIRTIO_GPU_F_VIRGL};
 
-use thiserror::Error as ThisError;
-use vhost::vhost_user::gpu_message::{
-    VhostUserGpuCursorPos, VhostUserGpuEdidRequest, VirtioGpuRespDisplayInfo,
-};
-use vhost::vhost_user::message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures};
-use vhost::vhost_user::GpuBackend;
-use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
-use virtio_bindings::bindings::virtio_ring::{
-    VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
-};
-use virtio_bindings::{
-    bindings::virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_RING_RESET, VIRTIO_F_VERSION_1},
-    virtio_gpu::{VIRTIO_GPU_F_CONTEXT_INIT, VIRTIO_GPU_F_RESOURCE_BLOB},
-};
-use virtio_queue::{QueueOwnedT, Reader, Writer};
-use vm_memory::{ByteValued, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap, Le32};
-use vmm_sys_util::epoll::EventSet;
-use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
-
-use super::protocol::{virtio_gpu_ctrl_hdr, GpuCommand, GpuResponse, VirtioGpuResult};
-use super::virtio_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing, VirtioShmRegion};
-use crate::protocol::GpuResponse::ErrUnspec;
-use crate::protocol::{
-    GpuCommandDecodeError, GpuResponseEncodeError, VirtioGpuConfig, CONTROL_QUEUE, CURSOR_QUEUE,
-    NUM_QUEUES, QUEUE_SIZE, VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX,
-    VIRTIO_GPU_MAX_SCANOUTS,
-};
-use crate::GpuConfig;
 use rutabaga_gfx::{
     ResourceCreate3D, RutabagaFence, Transfer3D, RUTABAGA_PIPE_BIND_RENDER_TARGET,
     RUTABAGA_PIPE_TEXTURE_2D,
+};
+use thiserror::Error as ThisError;
+use vhost::vhost_user::{
+    gpu_message::{VhostUserGpuCursorPos, VhostUserGpuEdidRequest, VirtioGpuRespDisplayInfo},
+    message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures},
+    GpuBackend,
+};
+use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
+use virtio_bindings::{
+    bindings::virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_RING_RESET, VIRTIO_F_VERSION_1},
+    bindings::virtio_ring::{VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC},
+    virtio_gpu::{
+        VIRTIO_GPU_F_CONTEXT_INIT, VIRTIO_GPU_F_EDID, VIRTIO_GPU_F_RESOURCE_BLOB,
+        VIRTIO_GPU_F_VIRGL,
+    },
+};
+use virtio_queue::{QueueOwnedT, Reader, Writer};
+use vm_memory::{ByteValued, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap, Le32};
+use vmm_sys_util::{
+    epoll::EventSet,
+    eventfd::{EventFd, EFD_NONBLOCK},
+};
+
+use crate::{
+    protocol::GpuResponse::ErrUnspec,
+    protocol::{
+        virtio_gpu_ctrl_hdr, GpuCommand, GpuCommandDecodeError, GpuResponse,
+        GpuResponseEncodeError, VirtioGpuResult,
+    },
+    protocol::{
+        VirtioGpuConfig, CONTROL_QUEUE, CURSOR_QUEUE, NUM_QUEUES, QUEUE_SIZE,
+        VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX, VIRTIO_GPU_MAX_SCANOUTS,
+    },
+    virtio_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing, VirtioShmRegion},
+    GpuConfig,
 };
 
 type Result<T> = std::result::Result<T, Error>;

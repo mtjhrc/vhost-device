@@ -5,28 +5,23 @@
 #![allow(non_camel_case_types)]
 
 use log::trace;
-use std::cmp::min;
-use std::convert::From;
-use std::fmt::Display;
-use std::io::{Read, Write};
-use std::marker::PhantomData;
-use std::mem::{size_of, size_of_val};
-use std::str::from_utf8;
-use std::{fmt, io};
+use std::{
+    cmp::min,
+    convert::From,
+    fmt::{self, Display},
+    io::{self, Read, Write},
+    marker::PhantomData,
+    mem::{size_of, size_of_val},
+    str::from_utf8,
+};
 
-use crate::device::{self, Error};
 use rutabaga_gfx::RutabagaError;
 use thiserror::Error;
 use virtio_queue::{Reader, Writer};
 use vm_memory::{ByteValued, GuestAddress, Le32};
 use zerocopy::{AsBytes, FromBytes};
 
-//use super::super::descriptor_utils::{Reader, Writer};
-// pub use super::defs::uapi::{
-//     virtio_gpu_config, VIRTIO_GPU_F_CONTEXT_INIT, VIRTIO_GPU_F_CREATE_GUEST_HANDLE,
-//     VIRTIO_GPU_F_EDID, VIRTIO_GPU_F_RESOURCE_BLOB, VIRTIO_GPU_F_RESOURCE_SYNC,
-//     VIRTIO_GPU_F_RESOURCE_UUID, VIRTIO_GPU_F_VIRGL,
-// };
+use crate::device::{self, Error};
 
 pub const VIRTIO_GPU_UNDEFINED: u32 = 0x0;
 

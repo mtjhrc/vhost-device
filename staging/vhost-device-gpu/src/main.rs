@@ -4,18 +4,20 @@
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
 use log::{error, info};
-use std::path::PathBuf;
-use std::process::exit;
-use std::sync::{Arc, RwLock};
+use std::{
+    path::PathBuf,
+    process::exit,
+    sync::{Arc, RwLock},
+};
 
 use clap::Parser;
 use thiserror::Error as ThisError;
+use vhost_device_gpu::{
+    device::{self, VhostUserGpuBackend},
+    GpuConfig,
+};
 use vhost_user_backend::VhostUserDaemon;
 use vm_memory::{GuestMemoryAtomic, GuestMemoryMmap};
-
-use vhost_device_gpu::device;
-use vhost_device_gpu::device::VhostUserGpuBackend;
-use vhost_device_gpu::GpuConfig;
 
 type Result<T> = std::result::Result<T, Error>;
 

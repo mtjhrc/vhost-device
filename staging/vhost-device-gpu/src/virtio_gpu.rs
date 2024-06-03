@@ -1,13 +1,15 @@
-use std::collections::BTreeMap;
-use std::env;
-use std::io::IoSliceMut;
-use std::os::fd::AsRawFd;
-use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
-
-use crate::device::Error;
-use libc::c_void;
 use log::{debug, error, trace};
+use std::{
+    collections::BTreeMap,
+    env,
+    io::IoSliceMut,
+    os::fd::AsRawFd,
+    path::PathBuf,
+    result::Result,
+    sync::{Arc, Mutex},
+};
+
+use libc::c_void;
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaChannel,
     RutabagaFence, RutabagaFenceHandler, RutabagaIovec, RutabagaResult, Transfer3D,
@@ -16,22 +18,23 @@ use rutabaga_gfx::{
     RUTABAGA_MAP_ACCESS_RW, RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK,
     RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
 };
-use vhost::vhost_user::gpu_message::{
-    VhostUserGpuCursorPos, VhostUserGpuCursorUpdate, VhostUserGpuEdidRequest, VhostUserGpuScanout,
-    VhostUserGpuUpdate, VirtioGpuRespDisplayInfo,
+use vhost::vhost_user::{
+    gpu_message::{
+        VhostUserGpuCursorPos, VhostUserGpuCursorUpdate, VhostUserGpuEdidRequest,
+        VhostUserGpuScanout, VhostUserGpuUpdate, VirtioGpuRespDisplayInfo,
+    },
+    GpuBackend,
 };
 use vhost_user_backend::{VringRwLock, VringT};
+use virtio_bindings::virtio_gpu::VIRTIO_GPU_BLOB_MEM_HOST3D;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 
-use super::protocol::GpuResponse::*;
-use super::protocol::{
-    virtio_gpu_rect, GpuResponse, GpuResponsePlaneInfo, VirtioGpuResult,
-    VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, VIRTIO_GPU_BLOB_MEM_HOST3D,
+use crate::device::Error;
+use crate::protocol::{
+    virtio_gpu_rect, GpuResponse, GpuResponse::*, GpuResponsePlaneInfo, VirtioGpuResult,
+    VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, VIRTIO_GPU_FLAG_INFO_RING_IDX,
+    VIRTIO_GPU_MAX_SCANOUTS,
 };
-use crate::protocol::VIRTIO_GPU_FLAG_INFO_RING_IDX;
-use crate::protocol::VIRTIO_GPU_MAX_SCANOUTS;
-use std::result::Result;
-use vhost::vhost_user::GpuBackend;
 
 fn sglist_to_rutabaga_iovecs(
     vecs: &[(GuestAddress, usize)],
