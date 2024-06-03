@@ -14,11 +14,11 @@ use std::mem::{size_of, size_of_val};
 use std::str::from_utf8;
 use std::{fmt, io};
 
-use crate::vhu_gpu::{self, Error};
+use crate::device::{self, Error};
 use rutabaga_gfx::RutabagaError;
 use thiserror::Error;
 use virtio_queue::{Reader, Writer};
-use vm_memory::{ByteValued, GuestAddress};
+use vm_memory::{ByteValued, GuestAddress, Le32};
 use zerocopy::{AsBytes, FromBytes};
 
 //use super::super::descriptor_utils::{Reader, Writer};
@@ -29,6 +29,15 @@ use zerocopy::{AsBytes, FromBytes};
 // };
 
 pub const VIRTIO_GPU_UNDEFINED: u32 = 0x0;
+
+pub const QUEUE_SIZE: usize = 1024;
+pub const NUM_QUEUES: usize = 2;
+
+pub const CONTROL_QUEUE: u16 = 0;
+pub const CURSOR_QUEUE: u16 = 1;
+
+/* VIRTIO_GPU_RESP_OK_DISPLAY_INFO */
+pub const VIRTIO_GPU_MAX_SCANOUTS: usize = 16;
 
 /* 2d commands */
 pub const VIRTIO_GPU_CMD_GET_DISPLAY_INFO: u32 = 0x100;
@@ -82,13 +91,7 @@ pub const VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID: u32 = 0x1203;
 pub const VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID: u32 = 0x1204;
 pub const VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER: u32 = 0x1205;
 
-pub const VIRTIO_GPU_BLOB_MEM_GUEST: u32 = 0x0001;
 pub const VIRTIO_GPU_BLOB_MEM_HOST3D: u32 = 0x0002;
-pub const VIRTIO_GPU_BLOB_MEM_HOST3D_GUEST: u32 = 0x0003;
-
-pub const VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE: u32 = 0x0001;
-pub const VIRTIO_GPU_BLOB_FLAG_USE_SHAREABLE: u32 = 0x0002;
-pub const VIRTIO_GPU_BLOB_FLAG_USE_CROSS_DEVICE: u32 = 0x0004;
 /* Create a OS-specific handle from guest memory (not upstreamed). */
 pub const VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE: u32 = 0x0008;
 
@@ -97,6 +100,41 @@ pub const VIRTIO_GPU_SHM_ID_HOST_VISIBLE: u8 = 0x0001;
 
 pub const VIRTIO_GPU_FLAG_FENCE: u32 = 1 << 0;
 pub const VIRTIO_GPU_FLAG_INFO_RING_IDX: u32 = 1 << 1;
+
+/// Virtio Gpu Configuration
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct VirtioGpuConfig {
+    /// Signals pending events to the driver
+    pub events_read: Le32,
+    /// Clears pending events in the device
+    pub events_clear: Le32,
+    /// Maximum number of scanouts supported by the device
+    pub num_scanouts: Le32,
+    /// Maximum number of capability sets supported by the device
+    pub num_capsets: Le32,
+}
+
+// SAFETY: The layout of the structure is fixed and can be initialized by
+// reading its content from byte array.
+unsafe impl ByteValued for VirtioGpuConfig {}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct InvalidCommandType(u32);
+
+impl std::fmt::Display for InvalidCommandType {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "Invalid command type {}", self.0)
+    }
+}
+
+impl From<InvalidCommandType> for crate::device::Error {
+    fn from(val: InvalidCommandType) -> Self {
+        Self::InvalidCommandType(val.0)
+    }
+}
+
+impl std::error::Error for InvalidCommandType {}
 
 #[derive(Copy, Clone, Debug, Default, AsBytes, FromBytes, PartialEq, Eq)]
 #[repr(C)]
@@ -242,8 +280,6 @@ pub struct virtio_gpu_display_one {
 }
 unsafe impl ByteValued for virtio_gpu_display_one {}
 
-/* VIRTIO_GPU_RESP_OK_DISPLAY_INFO */
-pub const VIRTIO_GPU_MAX_SCANOUTS: usize = 16;
 #[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct virtio_gpu_resp_display_info {
@@ -581,14 +617,14 @@ impl From<io::Error> for GpuCommandDecodeError {
     }
 }
 
-impl From<vhu_gpu::Error> for GpuCommandDecodeError {
-    fn from(_: vhu_gpu::Error) -> Self {
+impl From<device::Error> for GpuCommandDecodeError {
+    fn from(_: device::Error) -> Self {
         GpuCommandDecodeError::DescriptorReadFailed
     }
 }
 
-impl From<vhu_gpu::Error> for GpuResponseEncodeError {
-    fn from(_: vhu_gpu::Error) -> Self {
+impl From<device::Error> for GpuResponseEncodeError {
+    fn from(_: device::Error) -> Self {
         GpuResponseEncodeError::DescriptorWriteFailed
     }
 }
@@ -1004,6 +1040,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_virtio_gpu_config() {
+        // Test VirtioGpuConfig size
+        assert_eq!(std::mem::size_of::<VirtioGpuConfig>(), 16);
+    }
+
+    #[test]
+    fn test_invalid_command_type_display() {
+        let error = InvalidCommandType(42);
+        assert_eq!(format!("{}", error), "Invalid command type 42");
+    }
+
+    #[test]
     fn test_gpu_response_display() {
         let err_rutabaga = GpuResponse::ErrRutabaga(RutabagaError::InvalidContextId);
         assert_eq!(
@@ -1034,15 +1082,15 @@ mod tests {
 
     //Test vhu_error conversion to gpu command decode/encode error
     #[test]
-    fn test_vhu_gpu_error() {
-        let vhu_gpu_error = vhu_gpu::Error::DescriptorReadFailed;
-        let gpu_error: GpuCommandDecodeError = vhu_gpu_error.into();
+    fn test_device_error() {
+        let device_error = device::Error::DescriptorReadFailed;
+        let gpu_error: GpuCommandDecodeError = device_error.into();
         match gpu_error {
             GpuCommandDecodeError::DescriptorReadFailed => (),
             _ => panic!("Expected DescriptorReadFailed error"),
         }
-        let vhu_gpu_error = vhu_gpu::Error::DescriptorWriteFailed;
-        let gpu_error: GpuResponseEncodeError = vhu_gpu_error.into();
+        let device_error = device::Error::DescriptorWriteFailed;
+        let gpu_error: GpuResponseEncodeError = device_error.into();
         match gpu_error {
             GpuResponseEncodeError::DescriptorWriteFailed => (),
             _ => panic!("Expected DescriptorWriteFailed error"),

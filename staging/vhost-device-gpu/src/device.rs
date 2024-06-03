@@ -10,6 +10,7 @@ use std::{
     convert,
     io::{self, Result as IoResult},
 };
+use virtio_bindings::virtio_gpu::{VIRTIO_GPU_F_EDID, VIRTIO_GPU_F_VIRGL};
 
 use thiserror::Error as ThisError;
 use vhost::vhost_user::gpu_message::{
@@ -31,10 +32,14 @@ use vmm_sys_util::epoll::EventSet;
 use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
 
 use super::protocol::{virtio_gpu_ctrl_hdr, GpuCommand, GpuResponse, VirtioGpuResult};
-use super::virt_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing, VirtioShmRegion};
+use super::virtio_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing, VirtioShmRegion};
 use crate::protocol::GpuResponse::ErrUnspec;
-use crate::protocol::{VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX};
-use crate::{protocol, virtio_gpu::*, GpuConfig};
+use crate::protocol::{
+    GpuCommandDecodeError, GpuResponseEncodeError, VirtioGpuConfig, CONTROL_QUEUE, CURSOR_QUEUE,
+    NUM_QUEUES, QUEUE_SIZE, VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX,
+    VIRTIO_GPU_MAX_SCANOUTS,
+};
+use crate::GpuConfig;
 use rutabaga_gfx::{
     ResourceCreate3D, RutabagaFence, Transfer3D, RUTABAGA_PIPE_BIND_RENDER_TARGET,
     RUTABAGA_PIPE_TEXTURE_2D,
@@ -77,9 +82,9 @@ pub enum Error {
     #[error("Failed to create descriptor chain Writer: {0}")]
     CreateWriter(virtio_queue::Error),
     #[error("Failed to decode gpu command: {0}")]
-    GpuCommandDecode(protocol::GpuCommandDecodeError),
+    GpuCommandDecode(GpuCommandDecodeError),
     #[error("Failed to encode gpu response: {0}")]
-    GpuResponseEncode(protocol::GpuResponseEncodeError),
+    GpuResponseEncode(GpuResponseEncodeError),
     #[error("Failed add used chain to queue: {0}")]
     QueueAddUsed(virtio_queue::Error),
 }
@@ -581,6 +586,8 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::protocol::*;
     use rutabaga_gfx::{RutabagaBuilder, RutabagaComponentType, RutabagaHandler};
     use std::{
         collections::BTreeMap,
@@ -594,17 +601,6 @@ mod tests {
         Address, ByteValued, Bytes, GuestAddress, GuestMemoryAtomic, GuestMemoryLoadGuard,
         GuestMemoryMmap,
     };
-
-    use self::protocol::{
-        virtio_gpu_ctrl_hdr, virtio_gpu_ctx_create, virtio_gpu_ctx_destroy,
-        virtio_gpu_ctx_resource, virtio_gpu_get_capset, virtio_gpu_get_capset_info,
-        virtio_gpu_resource_assign_uuid, virtio_gpu_resource_attach_backing,
-        virtio_gpu_resource_create_2d, virtio_gpu_resource_create_3d,
-        virtio_gpu_resource_detach_backing, virtio_gpu_resource_flush, virtio_gpu_resource_unref,
-        virtio_gpu_transfer_host_3d, virtio_gpu_transfer_to_host_2d,
-    };
-
-    use super::*;
 
     type GpuDescriptorChain = DescriptorChain<GuestMemoryLoadGuard<GuestMemoryMmap<()>>>;
 
