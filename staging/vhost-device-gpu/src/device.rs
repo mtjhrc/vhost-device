@@ -5,45 +5,55 @@
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
 use log::{debug, error, trace, warn};
-use std::cell::RefCell;
 use std::{
+    cell::RefCell,
     convert,
     io::{self, Result as IoResult},
 };
 
-use thiserror::Error as ThisError;
-use vhost::vhost_user::gpu_message::{
-    VhostUserGpuCursorPos, VhostUserGpuEdidRequest, VirtioGpuRespDisplayInfo,
-};
-use vhost::vhost_user::message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures};
-use vhost::vhost_user::GpuBackend;
-use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
-use virtio_bindings::bindings::virtio_ring::{
-    VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC,
-};
-use virtio_bindings::{
-    bindings::virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_RING_RESET, VIRTIO_F_VERSION_1},
-    virtio_gpu::{VIRTIO_GPU_F_CONTEXT_INIT, VIRTIO_GPU_F_RESOURCE_BLOB},
-};
-use virtio_queue::{QueueOwnedT, Reader, Writer};
-use vm_memory::{ByteValued, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap, Le32};
-use vmm_sys_util::epoll::EventSet;
-use vmm_sys_util::eventfd::{EventFd, EFD_NONBLOCK};
-
-use super::protocol::{virtio_gpu_ctrl_hdr, GpuCommand, GpuResponse, VirtioGpuResult};
-use super::virt_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing, VirtioShmRegion};
-use crate::protocol::GpuResponse::ErrUnspec;
-use crate::protocol::{VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX};
-use crate::{protocol, virtio_gpu::*, GpuConfig};
 use rutabaga_gfx::{
     ResourceCreate3D, RutabagaFence, Transfer3D, RUTABAGA_PIPE_BIND_RENDER_TARGET,
     RUTABAGA_PIPE_TEXTURE_2D,
+};
+use thiserror::Error as ThisError;
+use vhost::vhost_user::{
+    gpu_message::{VhostUserGpuCursorPos, VhostUserGpuEdidRequest, VirtioGpuRespDisplayInfo},
+    message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures},
+    GpuBackend,
+};
+use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
+use virtio_bindings::{
+    bindings::virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_RING_RESET, VIRTIO_F_VERSION_1},
+    bindings::virtio_ring::{VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC},
+    virtio_gpu::{
+        VIRTIO_GPU_F_CONTEXT_INIT, VIRTIO_GPU_F_EDID, VIRTIO_GPU_F_RESOURCE_BLOB,
+        VIRTIO_GPU_F_VIRGL,
+    },
+};
+use virtio_queue::{QueueOwnedT, Reader, Writer};
+use vm_memory::{ByteValued, GuestAddressSpace, GuestMemoryAtomic, GuestMemoryMmap, Le32};
+use vmm_sys_util::{
+    epoll::EventSet,
+    eventfd::{EventFd, EFD_NONBLOCK},
+};
+
+use crate::{
+    protocol::GpuResponse::ErrUnspec,
+    protocol::{
+        virtio_gpu_ctrl_hdr, GpuCommand, GpuCommandDecodeError, GpuResponse,
+        GpuResponseEncodeError, VirtioGpuResult,
+    },
+    protocol::{
+        VirtioGpuConfig, CONTROL_QUEUE, CURSOR_QUEUE, NUM_QUEUES, QUEUE_SIZE,
+        VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX, VIRTIO_GPU_MAX_SCANOUTS,
+    },
+    virtio_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing, VirtioShmRegion},
+    GpuConfig,
 };
 
 type Result<T> = std::result::Result<T, Error>;
 
 #[derive(Debug, ThisError)]
-#[allow(dead_code)] //TODO: remove unused variants
 pub enum Error {
     #[error("Failed to handle event, didn't match EPOLLIN")]
     HandleEventNotEpollIn,
@@ -78,9 +88,9 @@ pub enum Error {
     #[error("Failed to create descriptor chain Writer: {0}")]
     CreateWriter(virtio_queue::Error),
     #[error("Failed to decode gpu command: {0}")]
-    GpuCommandDecode(protocol::GpuCommandDecodeError),
+    GpuCommandDecode(GpuCommandDecodeError),
     #[error("Failed to encode gpu response: {0}")]
-    GpuResponseEncode(protocol::GpuResponseEncodeError),
+    GpuResponseEncode(GpuResponseEncodeError),
     #[error("Failed add used chain to queue: {0}")]
     QueueAddUsed(virtio_queue::Error),
 }
@@ -292,69 +302,6 @@ impl VhostUserGpuBackend {
             GpuCommand::ResourceCreateBlob(_info) => {
                 todo!()
             }
-            // GpuCommand::CmdSubmit3d(info) => {
-            //     if reader.available_bytes() != 0 {
-            //         let num_in_fences = info.num_in_fences as usize;
-            //         let cmd_size = info.size as usize;
-            //         let mut cmd_buf = vec![0; cmd_size];
-            //         let mut fence_ids: Vec<u64> = Vec::with_capacity(num_in_fences);
-
-            //         for _ in 0..num_in_fences {
-            //             match reader.read_obj::<u64>(desc_addr) {
-            //                 Ok(fence_id) => {
-            //                     fence_ids.push(fence_id);
-            //                 }
-            //                 Err(_) => return Err(GpuResponse::ErrUnspec),
-            //             }
-            //         }
-
-            //         if reader.read_exact(&mut cmd_buf[..]).is_ok() {
-            //             virtio_gpu.submit_command(hdr.ctx_id, &mut cmd_buf[..], &fence_ids)
-            //         } else {
-            //             Err(GpuResponse::ErrInvalidParameter)
-            //         }
-            //     } else {
-            //         // Silently accept empty command buffers to allow for
-            //         // benchmarking.
-            //         Ok(GpuResponse::OkNoData)
-            //     }
-            // }
-            // GpuCommand::ResourceCreateBlob(info) => {
-            //     let resource_id = info.resource_id;
-            //     let ctx_id = hdr.ctx_id;
-
-            //     let resource_create_blob = ResourceCreateBlob {
-            //         blob_mem: info.blob_mem,
-            //         blob_flags: info.blob_flags,
-            //         blob_id: info.blob_id,
-            //         size: info.size,
-            //     };
-
-            //     let entry_count = info.nr_entries;
-            //     if reader.available_bytes() == 0 && entry_count > 0 {
-            //         return Err(GpuResponse::ErrUnspec);
-            //     }
-
-            //     let mut vecs = Vec::with_capacity(entry_count as usize);
-            //     for _ in 0..entry_count {
-            //         match reader.read_obj::<virtio_gpu_mem_entry>(desc_addr) {
-            //             Ok(entry) => {
-            //                 let addr = GuestAddress(entry.addr);
-            //                 let len = entry.length as usize;
-            //                 vecs.push((addr, len))
-            //             }
-            //             Err(_) => return Err(GpuResponse::ErrUnspec),
-            //         }
-            //     }
-
-            //     virtio_gpu.resource_create_blob(
-            //         ctx_id,
-            //         resource_id,
-            //         resource_create_blob,
-            //         vecs,
-            //         mem,
-            //     )
-            // }
             GpuCommand::SetScanoutBlob(_info) => {
                 panic!("virtio_gpu: GpuCommand::SetScanoutBlob unimplemented");
             }
@@ -645,6 +592,8 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::protocol::*;
     use rutabaga_gfx::{RutabagaBuilder, RutabagaComponentType, RutabagaHandler};
     use std::{
         collections::BTreeMap,
@@ -658,17 +607,6 @@ mod tests {
         Address, ByteValued, Bytes, GuestAddress, GuestMemoryAtomic, GuestMemoryLoadGuard,
         GuestMemoryMmap,
     };
-
-    use self::protocol::{
-        virtio_gpu_ctrl_hdr, virtio_gpu_ctx_create, virtio_gpu_ctx_destroy,
-        virtio_gpu_ctx_resource, virtio_gpu_get_capset, virtio_gpu_get_capset_info,
-        virtio_gpu_resource_assign_uuid, virtio_gpu_resource_attach_backing,
-        virtio_gpu_resource_create_2d, virtio_gpu_resource_create_3d,
-        virtio_gpu_resource_detach_backing, virtio_gpu_resource_flush, virtio_gpu_resource_unref,
-        virtio_gpu_transfer_host_3d, virtio_gpu_transfer_to_host_2d,
-    };
-
-    use super::*;
 
     type GpuDescriptorChain = DescriptorChain<GuestMemoryLoadGuard<GuestMemoryMmap<()>>>;
 

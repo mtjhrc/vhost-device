@@ -5,90 +5,76 @@
 #![allow(non_camel_case_types)]
 
 use log::trace;
-use std::cmp::min;
-use std::convert::From;
-use std::fmt::Display;
-use std::io::{Read, Write};
-use std::marker::PhantomData;
-use std::mem::{size_of, size_of_val};
-use std::str::from_utf8;
-use std::{fmt, io};
+use std::{
+    cmp::min,
+    convert::From,
+    fmt::{self, Display},
+    io::{self, Read, Write},
+    marker::PhantomData,
+    mem::{size_of, size_of_val},
+    str::from_utf8,
+};
 
-use crate::vhu_gpu::{self, Error};
 use rutabaga_gfx::RutabagaError;
 use thiserror::Error;
+pub use virtio_bindings::virtio_gpu::{
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE as VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_CTX_CREATE as VIRTIO_GPU_CMD_CTX_CREATE,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_CTX_DESTROY as VIRTIO_GPU_CMD_CTX_DESTROY,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE as VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_GET_CAPSET as VIRTIO_GPU_CMD_GET_CAPSET,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_GET_CAPSET_INFO as VIRTIO_GPU_CMD_GET_CAPSET_INFO,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_GET_DISPLAY_INFO as VIRTIO_GPU_CMD_GET_DISPLAY_INFO,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_GET_EDID as VIRTIO_GPU_CMD_GET_EDID,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_MOVE_CURSOR as VIRTIO_GPU_CMD_MOVE_CURSOR,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID as VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING as VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_CREATE_2D as VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_CREATE_3D as VIRTIO_GPU_CMD_RESOURCE_CREATE_3D,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB as VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING as VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_FLUSH as VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB as VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB as VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_RESOURCE_UNREF as VIRTIO_GPU_CMD_RESOURCE_UNREF,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_SET_SCANOUT as VIRTIO_GPU_CMD_SET_SCANOUT,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_SET_SCANOUT_BLOB as VIRTIO_GPU_CMD_SET_SCANOUT_BLOB,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_SUBMIT_3D as VIRTIO_GPU_CMD_SUBMIT_3D,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D as VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D as VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D as VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_CMD_UPDATE_CURSOR as VIRTIO_GPU_CMD_UPDATE_CURSOR,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID as VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER as VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID as VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_ERR_INVALID_SCANOUT_ID as VIRTIO_GPU_RESP_ERR_INVALID_SCANOUT_ID,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY as VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_ERR_UNSPEC as VIRTIO_GPU_RESP_ERR_UNSPEC,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_OK_CAPSET as VIRTIO_GPU_RESP_OK_CAPSET,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_OK_CAPSET_INFO as VIRTIO_GPU_RESP_OK_CAPSET_INFO,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_OK_DISPLAY_INFO as VIRTIO_GPU_RESP_OK_DISPLAY_INFO,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_OK_EDID as VIRTIO_GPU_RESP_OK_EDID,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_OK_MAP_INFO as VIRTIO_GPU_RESP_OK_MAP_INFO,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_OK_NODATA as VIRTIO_GPU_RESP_OK_NODATA,
+    virtio_gpu_ctrl_type_VIRTIO_GPU_RESP_OK_RESOURCE_UUID as VIRTIO_GPU_RESP_OK_RESOURCE_UUID,
+};
 use virtio_queue::{Reader, Writer};
-use vm_memory::{ByteValued, GuestAddress};
+use vm_memory::{ByteValued, GuestAddress, Le32};
 use zerocopy::{AsBytes, FromBytes};
 
-//use super::super::descriptor_utils::{Reader, Writer};
-// pub use super::defs::uapi::{
-//     virtio_gpu_config, VIRTIO_GPU_F_CONTEXT_INIT, VIRTIO_GPU_F_CREATE_GUEST_HANDLE,
-//     VIRTIO_GPU_F_EDID, VIRTIO_GPU_F_RESOURCE_BLOB, VIRTIO_GPU_F_RESOURCE_SYNC,
-//     VIRTIO_GPU_F_RESOURCE_UUID, VIRTIO_GPU_F_VIRGL,
-// };
+use crate::device::{self, Error};
 
-pub const VIRTIO_GPU_UNDEFINED: u32 = 0x0;
+pub const QUEUE_SIZE: usize = 1024;
+pub const NUM_QUEUES: usize = 2;
 
-/* 2d commands */
-pub const VIRTIO_GPU_CMD_GET_DISPLAY_INFO: u32 = 0x100;
-pub const VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: u32 = 0x101;
-pub const VIRTIO_GPU_CMD_RESOURCE_UNREF: u32 = 0x102;
-pub const VIRTIO_GPU_CMD_SET_SCANOUT: u32 = 0x103;
-pub const VIRTIO_GPU_CMD_RESOURCE_FLUSH: u32 = 0x104;
-pub const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D: u32 = 0x105;
-pub const VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING: u32 = 0x106;
-pub const VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING: u32 = 0x107;
-pub const VIRTIO_GPU_CMD_GET_CAPSET_INFO: u32 = 0x108;
-pub const VIRTIO_GPU_CMD_GET_CAPSET: u32 = 0x109;
-pub const VIRTIO_GPU_CMD_GET_EDID: u32 = 0x10a;
-pub const VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID: u32 = 0x10b;
-pub const VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB: u32 = 0x10c;
-pub const VIRTIO_GPU_CMD_SET_SCANOUT_BLOB: u32 = 0x10d;
+pub const CONTROL_QUEUE: u16 = 0;
+pub const CURSOR_QUEUE: u16 = 1;
 
-/* 3d commands */
-pub const VIRTIO_GPU_CMD_CTX_CREATE: u32 = 0x200;
-pub const VIRTIO_GPU_CMD_CTX_DESTROY: u32 = 0x201;
-pub const VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE: u32 = 0x202;
-pub const VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE: u32 = 0x203;
-pub const VIRTIO_GPU_CMD_RESOURCE_CREATE_3D: u32 = 0x204;
-pub const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D: u32 = 0x205;
-pub const VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D: u32 = 0x206;
-pub const VIRTIO_GPU_CMD_SUBMIT_3D: u32 = 0x207;
-pub const VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB: u32 = 0x208;
-pub const VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB: u32 = 0x209;
-
-/* cursor commands */
-pub const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32 = 0x300;
-pub const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x301;
-
-/* success responses */
-pub const VIRTIO_GPU_RESP_OK_NODATA: u32 = 0x1100;
-pub const VIRTIO_GPU_RESP_OK_DISPLAY_INFO: u32 = 0x1101;
-pub const VIRTIO_GPU_RESP_OK_CAPSET_INFO: u32 = 0x1102;
-pub const VIRTIO_GPU_RESP_OK_CAPSET: u32 = 0x1103;
-pub const VIRTIO_GPU_RESP_OK_EDID: u32 = 0x1104;
-pub const VIRTIO_GPU_RESP_OK_RESOURCE_UUID: u32 = 0x1105;
-pub const VIRTIO_GPU_RESP_OK_MAP_INFO: u32 = 0x1106;
+pub const VIRTIO_GPU_MAX_SCANOUTS: usize = 16;
 
 /* CHROMIUM(b/277982577): success responses */
 pub const VIRTIO_GPU_RESP_OK_RESOURCE_PLANE_INFO: u32 = 0x11FF;
 
-/* error responses */
-pub const VIRTIO_GPU_RESP_ERR_UNSPEC: u32 = 0x1200;
-pub const VIRTIO_GPU_RESP_ERR_OUT_OF_MEMORY: u32 = 0x1201;
-pub const VIRTIO_GPU_RESP_ERR_INVALID_SCANOUT_ID: u32 = 0x1202;
-pub const VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID: u32 = 0x1203;
-pub const VIRTIO_GPU_RESP_ERR_INVALID_CONTEXT_ID: u32 = 0x1204;
-pub const VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER: u32 = 0x1205;
-
-pub const VIRTIO_GPU_BLOB_MEM_GUEST: u32 = 0x0001;
-pub const VIRTIO_GPU_BLOB_MEM_HOST3D: u32 = 0x0002;
-pub const VIRTIO_GPU_BLOB_MEM_HOST3D_GUEST: u32 = 0x0003;
-
-pub const VIRTIO_GPU_BLOB_FLAG_USE_MAPPABLE: u32 = 0x0001;
-pub const VIRTIO_GPU_BLOB_FLAG_USE_SHAREABLE: u32 = 0x0002;
-pub const VIRTIO_GPU_BLOB_FLAG_USE_CROSS_DEVICE: u32 = 0x0004;
 /* Create a OS-specific handle from guest memory (not upstreamed). */
 pub const VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE: u32 = 0x0008;
 
@@ -97,6 +83,41 @@ pub const VIRTIO_GPU_SHM_ID_HOST_VISIBLE: u8 = 0x0001;
 
 pub const VIRTIO_GPU_FLAG_FENCE: u32 = 1 << 0;
 pub const VIRTIO_GPU_FLAG_INFO_RING_IDX: u32 = 1 << 1;
+
+/// Virtio Gpu Configuration
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
+#[repr(C)]
+pub struct VirtioGpuConfig {
+    /// Signals pending events to the driver
+    pub events_read: Le32,
+    /// Clears pending events in the device
+    pub events_clear: Le32,
+    /// Maximum number of scanouts supported by the device
+    pub num_scanouts: Le32,
+    /// Maximum number of capability sets supported by the device
+    pub num_capsets: Le32,
+}
+
+// SAFETY: The layout of the structure is fixed and can be initialized by
+// reading its content from byte array.
+unsafe impl ByteValued for VirtioGpuConfig {}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct InvalidCommandType(u32);
+
+impl std::fmt::Display for InvalidCommandType {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(fmt, "Invalid command type {}", self.0)
+    }
+}
+
+impl From<InvalidCommandType> for crate::device::Error {
+    fn from(val: InvalidCommandType) -> Self {
+        Self::InvalidCommandType(val.0)
+    }
+}
+
+impl std::error::Error for InvalidCommandType {}
 
 #[derive(Copy, Clone, Debug, Default, AsBytes, FromBytes, PartialEq, Eq)]
 #[repr(C)]
@@ -242,8 +263,6 @@ pub struct virtio_gpu_display_one {
 }
 unsafe impl ByteValued for virtio_gpu_display_one {}
 
-/* VIRTIO_GPU_RESP_OK_DISPLAY_INFO */
-pub const VIRTIO_GPU_MAX_SCANOUTS: usize = 16;
 #[derive(Copy, Clone, Debug, Default, FromBytes, AsBytes)]
 #[repr(C)]
 pub struct virtio_gpu_resp_display_info {
@@ -581,14 +600,14 @@ impl From<io::Error> for GpuCommandDecodeError {
     }
 }
 
-impl From<vhu_gpu::Error> for GpuCommandDecodeError {
-    fn from(_: vhu_gpu::Error) -> Self {
+impl From<device::Error> for GpuCommandDecodeError {
+    fn from(_: device::Error) -> Self {
         GpuCommandDecodeError::DescriptorReadFailed
     }
 }
 
-impl From<vhu_gpu::Error> for GpuResponseEncodeError {
-    fn from(_: vhu_gpu::Error) -> Self {
+impl From<device::Error> for GpuResponseEncodeError {
+    fn from(_: device::Error) -> Self {
         GpuResponseEncodeError::DescriptorWriteFailed
     }
 }
@@ -1004,6 +1023,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_virtio_gpu_config() {
+        // Test VirtioGpuConfig size
+        assert_eq!(std::mem::size_of::<VirtioGpuConfig>(), 16);
+    }
+
+    #[test]
+    fn test_invalid_command_type_display() {
+        let error = InvalidCommandType(42);
+        assert_eq!(format!("{}", error), "Invalid command type 42");
+    }
+
+    #[test]
     fn test_gpu_response_display() {
         let err_rutabaga = GpuResponse::ErrRutabaga(RutabagaError::InvalidContextId);
         assert_eq!(
@@ -1034,15 +1065,15 @@ mod tests {
 
     //Test vhu_error conversion to gpu command decode/encode error
     #[test]
-    fn test_vhu_gpu_error() {
-        let vhu_gpu_error = vhu_gpu::Error::DescriptorReadFailed;
-        let gpu_error: GpuCommandDecodeError = vhu_gpu_error.into();
+    fn test_device_error() {
+        let device_error = device::Error::DescriptorReadFailed;
+        let gpu_error: GpuCommandDecodeError = device_error.into();
         match gpu_error {
             GpuCommandDecodeError::DescriptorReadFailed => (),
             _ => panic!("Expected DescriptorReadFailed error"),
         }
-        let vhu_gpu_error = vhu_gpu::Error::DescriptorWriteFailed;
-        let gpu_error: GpuResponseEncodeError = vhu_gpu_error.into();
+        let device_error = device::Error::DescriptorWriteFailed;
+        let gpu_error: GpuResponseEncodeError = device_error.into();
         match gpu_error {
             GpuResponseEncodeError::DescriptorWriteFailed => (),
             _ => panic!("Expected DescriptorWriteFailed error"),

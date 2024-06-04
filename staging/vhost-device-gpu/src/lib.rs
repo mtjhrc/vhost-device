@@ -1,11 +1,8 @@
+pub mod device;
 pub mod protocol;
-pub mod vhu_gpu;
-pub mod virt_gpu;
 pub mod virtio_gpu;
 
 use std::path::PathBuf;
-
-use virtio_gpu::VirtioGpuCtrlHdr;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum GPUstate {
@@ -13,10 +10,7 @@ pub enum GPUstate {
     GpuCmdStatePending,
     GpuCmdStateFinished,
 }
-pub struct VirtioGpuCtrlCommand {
-    pub cmd_hdr: VirtioGpuCtrlHdr,
-    pub state: GPUstate,
-}
+
 #[derive(Debug, Clone)]
 /// This structure is the public API through which an external program
 /// is allowed to configure the backend.
@@ -82,7 +76,6 @@ mod tests {
     use super::*;
     use assert_matches::assert_matches;
     use std::io;
-    use virtio_gpu::VirtioGpuCtrlHdr;
 
     #[test]
     fn test_gpu_config() {
@@ -90,16 +83,6 @@ mod tests {
         let socket_path = PathBuf::from("/tmp/socket");
         let gpu_config = GpuConfig::new(socket_path.clone());
         assert_eq!(gpu_config.get_socket_path(), socket_path);
-    }
-
-    #[test]
-    fn test_virtio_gpu_ctrl_command() {
-        // Test the creation of VirtioGpuCtrlCommand struct
-        let cmd_hdr = VirtioGpuCtrlHdr::default();
-        let state = GPUstate::GpuCmdStateNew;
-        let ctrl_command = VirtioGpuCtrlCommand { cmd_hdr, state };
-        assert_eq!(ctrl_command.cmd_hdr.gpu_type, 0);
-        assert_eq!(ctrl_command.state, GPUstate::GpuCmdStateNew);
     }
 
     #[test]

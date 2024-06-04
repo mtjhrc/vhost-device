@@ -1,323 +1,1056 @@
-// VirtIO GPIO definitions
-//
-// SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
-use vm_memory::{ByteValued, Le32, Le64};
+use log::{debug, error, trace};
+use std::{
+    collections::BTreeMap,
+    env,
+    io::IoSliceMut,
+    os::fd::AsRawFd,
+    path::PathBuf,
+    result::Result,
+    sync::{Arc, Mutex},
+};
 
-/// Virtio Gpu Feature bits
-pub const VIRTIO_GPU_F_VIRGL: u32 = 0;
-pub const VIRTIO_GPU_F_EDID: u32 = 1;
-pub const _VIRTIO_GPU_F_RESOURCE_UUID: u32 = 2;
-pub const _VIRTIO_GPU_F_RESOURCE_BLOB: u32 = 3;
-pub const _VIRTIO_GPU_F_CONTEXT_INIT: u32 = 4;
+use libc::c_void;
+use rutabaga_gfx::{
+    ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaChannel,
+    RutabagaFence, RutabagaFenceHandler, RutabagaIovec, RutabagaResult, Transfer3D,
+    RUTABAGA_CAPSET_DRM, RUTABAGA_CAPSET_VENUS, RUTABAGA_CAPSET_VIRGL, RUTABAGA_CAPSET_VIRGL2,
+    RUTABAGA_CHANNEL_TYPE_WAYLAND, RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_ACCESS_READ,
+    RUTABAGA_MAP_ACCESS_RW, RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK,
+    RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
+};
+use vhost::vhost_user::{
+    gpu_message::{
+        VhostUserGpuCursorPos, VhostUserGpuCursorUpdate, VhostUserGpuEdidRequest,
+        VhostUserGpuScanout, VhostUserGpuUpdate, VirtioGpuRespDisplayInfo,
+    },
+    GpuBackend,
+};
+use vhost_user_backend::{VringRwLock, VringT};
+use virtio_bindings::virtio_gpu::VIRTIO_GPU_BLOB_MEM_HOST3D;
+use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 
-pub const QUEUE_SIZE: usize = 1024;
-pub const NUM_QUEUES: usize = 2;
+use crate::device::Error;
+use crate::protocol::{
+    virtio_gpu_rect, GpuResponse, GpuResponse::*, GpuResponsePlaneInfo, VirtioGpuResult,
+    VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, VIRTIO_GPU_FLAG_INFO_RING_IDX,
+    VIRTIO_GPU_MAX_SCANOUTS,
+};
 
-pub const CONTROL_QUEUE: u16 = 0;
-pub const CURSOR_QUEUE: u16 = 1;
+fn sglist_to_rutabaga_iovecs(
+    vecs: &[(GuestAddress, usize)],
+    mem: &GuestMemoryMmap,
+) -> Result<Vec<RutabagaIovec>, ()> {
+    if vecs
+        .iter()
+        .any(|&(addr, len)| mem.get_slice(addr, len).is_err())
+    {
+        return Err(());
+    }
 
-pub const _VIRTIO_GPU_EVENT_DISPLAY: u32 = 1 << 0;
-
-/// Virtio Gpu Configuration
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
-pub struct VirtioGpuConfig {
-    /// Signals pending events to the driver
-    pub events_read: Le32,
-    /// Clears pending events in the device
-    pub events_clear: Le32,
-    /// Maximum number of scanouts supported by the device
-    pub num_scanouts: Le32,
-    /// Maximum number of capability sets supported by the device
-    pub num_capsets: Le32,
+    let mut rutabaga_iovecs: Vec<RutabagaIovec> = Vec::new();
+    for &(addr, len) in vecs {
+        let slice = mem.get_slice(addr, len).unwrap();
+        rutabaga_iovecs.push(RutabagaIovec {
+            base: slice.ptr_guard_mut().as_ptr() as *mut c_void,
+            len,
+        });
+    }
+    Ok(rutabaga_iovecs)
 }
 
-// SAFETY: The layout of the structure is fixed and can be initialized by
-// reading its content from byte array.
-unsafe impl ByteValued for VirtioGpuConfig {}
-
-/// Virtio GPU Request / Response common header
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
-pub struct VirtioGpuCtrlHdr {
-    /// request type / device response
-    pub gpu_type: Le32,
-    /// request / response flags
-    pub flags: Le32,
-    /// request / response fence_id field
-    pub fence_id: Le64,
-    /// Rendering context (used in 3D mode only)
-    pub ctx_id: Le32,
-    /// request / response ring index
-    pub ring_idx: u8,
-    pub padding: [u8; 3],
-}
-// SAFETY: The layout of the structure is fixed and can be initialized by
-// reading its content from byte array.
-unsafe impl ByteValued for VirtioGpuCtrlHdr {}
-
-/* VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: create a 2d resource with a format */
-#[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
-#[repr(C)]
-pub struct VirtioGpuResourceCreate2d {
-    pub hdr: VirtioGpuCtrlHdr,
-    pub resource_id: Le32,
-    pub format: Le32,
-    pub width: Le32,
-    pub height: Le32,
+#[derive(Default, Debug)]
+pub struct Rectangle {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
-/* VIRTIO_GPU_RESP_OK_DISPLAY_INFO */
-pub const VIRTIO_GPU_MAX_SCANOUTS: usize = 16;
-
-/* 2d commands */
-pub const VIRTIO_GPU_CMD_GET_DISPLAY_INFO: u32 = 0x100;
-pub const VIRTIO_GPU_CMD_RESOURCE_CREATE_2D: u32 = 0x101;
-pub const VIRTIO_GPU_CMD_RESOURCE_UNREF: u32 = 0x102;
-pub const VIRTIO_GPU_CMD_SET_SCANOUT: u32 = 0x103;
-pub const VIRTIO_GPU_CMD_RESOURCE_FLUSH: u32 = 0x104;
-pub const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D: u32 = 0x105;
-pub const VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING: u32 = 0x106;
-pub const VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING: u32 = 0x107;
-pub const VIRTIO_GPU_CMD_GET_CAPSET_INFO: u32 = 0x108;
-pub const VIRTIO_GPU_CMD_GET_CAPSET: u32 = 0x109;
-pub const VIRTIO_GPU_CMD_GET_EDID: u32 = 0x10a;
-pub const VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID: u32 = 0x10b;
-pub const VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB: u32 = 0x10c;
-pub const VIRTIO_GPU_CMD_SET_SCANOUT_BLOB: u32 = 0x10d;
-
-/* 3d commands */
-pub const VIRTIO_GPU_CMD_CTX_CREATE: u32 = 0x200;
-pub const VIRTIO_GPU_CMD_CTX_DESTROY: u32 = 0x201;
-pub const VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE: u32 = 0x202;
-pub const VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE: u32 = 0x203;
-pub const VIRTIO_GPU_CMD_RESOURCE_CREATE_3D: u32 = 0x204;
-pub const VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D: u32 = 0x205;
-pub const VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D: u32 = 0x206;
-pub const VIRTIO_GPU_CMD_SUBMIT_3D: u32 = 0x207;
-pub const VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB: u32 = 0x208;
-pub const VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB: u32 = 0x209;
-
-/* cursor commands */
-pub const VIRTIO_GPU_CMD_UPDATE_CURSOR: u32 = 0x300;
-pub const VIRTIO_GPU_CMD_MOVE_CURSOR: u32 = 0x301;
-
-#[derive(Debug, PartialEq, Eq)]
-pub struct InvalidCommandType(u32);
-
-impl std::fmt::Display for InvalidCommandType {
-    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(fmt, "Invalid command type {}", self.0)
+impl From<virtio_gpu_rect> for Rectangle {
+    fn from(r: virtio_gpu_rect) -> Self {
+        Self {
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        }
     }
 }
 
-impl From<InvalidCommandType> for crate::vhu_gpu::Error {
-    fn from(val: InvalidCommandType) -> Self {
-        Self::InvalidCommandType(val.0)
+pub trait VirtioGpu {
+    /// Uses the hypervisor to unmap the blob resource.
+    fn resource_unmap_blob(
+        &mut self,
+        resource_id: u32,
+        shm_region: &VirtioShmRegion,
+    ) -> VirtioGpuResult;
+
+    /// Uses the hypervisor to map the rutabaga blob resource.
+    ///
+    /// When sandboxing is disabled, external_blob is unset and opaque fds are mapped by
+    /// rutabaga as ExternalMapping.
+    /// When sandboxing is enabled, external_blob is set and opaque fds must be mapped in the
+    /// hypervisor process by Vulkano using metadata provided by Rutabaga::vulkan_info().
+    fn resource_map_blob(
+        &mut self,
+        resource_id: u32,
+        shm_region: &VirtioShmRegion,
+        offset: u64,
+    ) -> VirtioGpuResult;
+
+    /// Creates a blob resource using rutabaga.
+    fn resource_create_blob(
+        &mut self,
+        ctx_id: u32,
+        resource_id: u32,
+        resource_create_blob: ResourceCreateBlob,
+        vecs: Vec<(GuestAddress, usize)>,
+        mem: &GuestMemoryMmap,
+    ) -> VirtioGpuResult;
+
+    fn process_fence(
+        &mut self,
+        ring: VirtioGpuRing,
+        fence_id: u64,
+        desc_index: u16,
+        len: u32,
+    ) -> bool;
+
+    /// Creates a fence with the RutabagaFence that can be used to determine when the previous
+    /// command completed.
+    fn create_fence(&mut self, rutabaga_fence: RutabagaFence) -> VirtioGpuResult;
+
+    /// Submits a command buffer to a rutabaga context.
+    fn submit_command(
+        &mut self,
+        ctx_id: u32,
+        commands: &mut [u8],
+        fence_ids: &[u64],
+    ) -> VirtioGpuResult;
+
+    /// Detaches a resource from a rutabaga context.
+    fn context_detach_resource(&mut self, ctx_id: u32, resource_id: u32) -> VirtioGpuResult;
+
+    /// Attaches a resource to a rutabaga context.
+    fn context_attach_resource(&mut self, ctx_id: u32, resource_id: u32) -> VirtioGpuResult;
+
+    /// Destroys a rutabaga context.
+    fn destroy_context(&mut self, ctx_id: u32) -> VirtioGpuResult;
+    fn force_ctx_0(&self);
+
+    /// Gets the list of supported display resolutions as a slice of `(width, height, enabled)` tuples.
+    fn display_info(&self, display_info: VirtioGpuRespDisplayInfo) -> Vec<(u32, u32, bool)>;
+
+    /// Gets the EDID for the specified scanout ID. If that scanout is not enabled, it would return
+    /// the EDID of a default display.
+    fn get_edid(
+        &self,
+        gpu_backend: &mut GpuBackend,
+        edid_req: VhostUserGpuEdidRequest,
+    ) -> VirtioGpuResult;
+
+    /// Sets the given resource id as the source of scanout to the display.
+    fn set_scanout(
+        &mut self,
+        gpu_backend: &mut GpuBackend,
+        scanout_id: u32,
+        resource_id: u32,
+        rect: Rectangle,
+    ) -> VirtioGpuResult;
+
+    /// Creates a 3D resource with the given properties and resource_id.
+    fn resource_create_3d(
+        &mut self,
+        resource_id: u32,
+        resource_create_3d: ResourceCreate3D,
+    ) -> VirtioGpuResult;
+
+    /// Releases guest kernel reference on the resource.
+    fn unref_resource(&mut self, resource_id: u32) -> VirtioGpuResult;
+
+    /// If the resource is the scanout resource, flush it to the display.
+    fn flush_resource(
+        &mut self,
+        resource_id: u32,
+        gpu_backend: &mut GpuBackend,
+        rect: Rectangle,
+    ) -> VirtioGpuResult;
+
+    /// Copies data to host resource from the attached iovecs. Can also be used to flush caches.
+    fn transfer_write(
+        &mut self,
+        ctx_id: u32,
+        resource_id: u32,
+        transfer: Transfer3D,
+    ) -> VirtioGpuResult;
+
+    /// Copies data from the host resource to:
+    ///    1) To the optional volatile slice
+    ///    2) To the host resource's attached iovecs
+    ///
+    /// Can also be used to invalidate caches.
+    fn transfer_read(
+        &mut self,
+        ctx_id: u32,
+        resource_id: u32,
+        transfer: Transfer3D,
+        buf: Option<VolatileSlice>,
+    ) -> VirtioGpuResult;
+
+    /// Attaches backing memory to the given resource, represented by a `Vec` of `(address, size)`
+    /// tuples in the guest's physical address space. Converts to RutabagaIovec from the memory
+    /// mapping.
+    fn attach_backing(
+        &mut self,
+        resource_id: u32,
+        mem: &GuestMemoryMmap,
+        vecs: Vec<(GuestAddress, usize)>,
+    ) -> VirtioGpuResult;
+
+    /// Detaches any previously attached iovecs from the resource.
+    fn detach_backing(&mut self, resource_id: u32) -> VirtioGpuResult;
+
+    /// Updates the cursor's memory to the given resource_id, and sets its position to the given
+    /// coordinates.
+    fn update_cursor(
+        &mut self,
+        resource_id: u32,
+        gpu_backend: &mut GpuBackend,
+        cursor_pos: VhostUserGpuCursorPos,
+        hot_x: u32,
+        hot_y: u32,
+    ) -> VirtioGpuResult;
+
+    /// Moves the cursor's position to the given coordinates.
+    fn move_cursor(
+        &mut self,
+        resource_id: u32,
+        gpu_backend: &mut GpuBackend,
+        cursor: VhostUserGpuCursorPos,
+    ) -> VirtioGpuResult;
+
+    /// Returns a uuid for the resource.
+    fn resource_assign_uuid(&self, resource_id: u32) -> VirtioGpuResult;
+
+    /// Gets rutabaga's capset information associated with `index`.
+    fn get_capset_info(&self, index: u32) -> VirtioGpuResult;
+
+    /// Gets a capset from rutabaga.
+    fn get_capset(&self, capset_id: u32, version: u32) -> VirtioGpuResult;
+
+    /// Creates a rutabaga context.
+    fn create_context(
+        &mut self,
+        ctx_id: u32,
+        context_init: u32,
+        context_name: Option<&str>,
+    ) -> VirtioGpuResult;
+}
+
+#[derive(Clone, Default)]
+pub struct VirtioShmRegion {
+    pub host_addr: u64,
+    pub guest_addr: u64,
+    pub size: usize,
+}
+
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+pub enum VirtioGpuRing {
+    Global,
+    ContextSpecific { ctx_id: u32, ring_idx: u8 },
+}
+
+struct FenceDescriptor {
+    ring: VirtioGpuRing,
+    fence_id: u64,
+    desc_index: u16,
+    len: u32,
+}
+
+#[derive(Default)]
+pub struct FenceState {
+    descs: Vec<FenceDescriptor>,
+    completed_fences: BTreeMap<VirtioGpuRing, u64>,
+}
+
+#[derive(Copy, Clone, Debug, Default)]
+struct AssociatedScanouts(u32);
+
+impl AssociatedScanouts {
+    fn enable(&mut self, scanout_id: u32) {
+        self.0 |= 1 << scanout_id;
+    }
+
+    fn disable(&mut self, scanout_id: u32) {
+        self.0 ^= 1 << scanout_id;
+    }
+
+    fn iter_enabled(self) -> impl Iterator<Item = u32> {
+        (0..VIRTIO_GPU_MAX_SCANOUTS)
+            .filter(move |i| ((self.0 >> i) & 1) == 1)
+            .map(|n| n as u32)
     }
 }
 
-impl std::error::Error for InvalidCommandType {}
-
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum GpuCommandType {
-    GetDisplayInfo = 0x100,
-    ResourceCreate2d = 0x101,
-    ResourceUnref = 0x102,
-    SetScanout = 0x103,
-    SetScanoutBlob = 0x10d,
-    ResourceFlush = 0x104,
-    TransferToHost2d = 0x105,
-    ResourceAttachBacking = 0x106,
-    ResourceDetachBacking = 0x107,
-    GetCapsetInfo = 0x108,
-    GetCapset = 0x109,
-    GetEdid = 0x10a,
-    CtxCreate = 0x200,
-    CtxDestroy = 0x201,
-    CtxAttachResource = 0x202,
-    CtxDetachResource = 0x203,
-    ResourceCreate3d = 0x204,
-    TransferToHost3d = 0x205,
-    TransferFromHost3d = 0x206,
-    CmdSubmit3d = 0x207,
-    ResourceCreateBlob = 0x10c,
-    ResourceMapBlob = 0x208,
-    ResourceUnmapBlob = 0x209,
-    UpdateCursor = 0x300,
-    MoveCursor = 0x301,
-    ResourceAssignUuid = 0x10b,
+#[derive(Default)]
+pub struct VirtioGpuResource {
+    pub size: u64,
+    pub shmem_offset: Option<u64>,
+    pub rutabaga_external_mapping: bool,
+    /// Stores information about which scanouts are associated with the given resource.
+    /// Resource could be used for multiple scanouts (the displays are mirrored).
+    scanouts: AssociatedScanouts,
 }
 
-impl TryFrom<Le32> for GpuCommandType {
-    type Error = InvalidCommandType;
+impl VirtioGpuResource {
+    /// Creates a new VirtioGpuResource with the given metadata.  Width and height are used by the
+    /// display, while size is useful for hypervisor mapping.
+    pub fn new(_resource_id: u32, _width: u32, _height: u32, size: u64) -> VirtioGpuResource {
+        VirtioGpuResource {
+            size,
+            shmem_offset: None,
+            rutabaga_external_mapping: false,
+            scanouts: Default::default(),
+        }
+    }
+}
 
-    fn try_from(value: Le32) -> Result<Self, Self::Error> {
-        Ok(match u32::from(value) {
-            VIRTIO_GPU_CMD_GET_DISPLAY_INFO => Self::GetDisplayInfo,
-            VIRTIO_GPU_CMD_RESOURCE_CREATE_2D => Self::ResourceCreate2d,
-            VIRTIO_GPU_CMD_RESOURCE_UNREF => Self::ResourceUnref,
-            VIRTIO_GPU_CMD_SET_SCANOUT => Self::SetScanout,
-            VIRTIO_GPU_CMD_SET_SCANOUT_BLOB => Self::SetScanoutBlob,
-            VIRTIO_GPU_CMD_RESOURCE_FLUSH => Self::ResourceFlush,
-            VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D => Self::TransferToHost2d,
-            VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING => Self::ResourceAttachBacking,
-            VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING => Self::ResourceDetachBacking,
-            VIRTIO_GPU_CMD_GET_CAPSET => Self::GetCapset,
-            VIRTIO_GPU_CMD_GET_CAPSET_INFO => Self::GetCapsetInfo,
-            VIRTIO_GPU_CMD_GET_EDID => Self::GetEdid,
-            VIRTIO_GPU_CMD_CTX_CREATE => Self::CtxCreate,
-            VIRTIO_GPU_CMD_CTX_DESTROY => Self::CtxDestroy,
-            VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE => Self::CtxAttachResource,
-            VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE => Self::CtxDetachResource,
-            VIRTIO_GPU_CMD_RESOURCE_CREATE_3D => Self::ResourceCreate3d,
-            VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D => Self::TransferToHost3d,
-            VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D => Self::TransferFromHost3d,
-            VIRTIO_GPU_CMD_SUBMIT_3D => Self::CmdSubmit3d,
-            VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB => Self::ResourceCreateBlob,
-            VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB => Self::ResourceMapBlob,
-            VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB => Self::ResourceUnmapBlob,
-            VIRTIO_GPU_CMD_UPDATE_CURSOR => Self::UpdateCursor,
-            VIRTIO_GPU_CMD_MOVE_CURSOR => Self::MoveCursor,
-            VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID => Self::ResourceAssignUuid,
-            other => return Err(InvalidCommandType(other)),
+pub struct VirtioGpuScanout {
+    resource_id: u32,
+    rect: Rectangle,
+}
+
+pub struct RutabagaVirtioGpu {
+    pub(crate) rutabaga: Rutabaga,
+    pub(crate) resources: BTreeMap<u32, VirtioGpuResource>,
+    pub(crate) fence_state: Arc<Mutex<FenceState>>,
+    pub(crate) scanouts: [Option<VirtioGpuScanout>; VIRTIO_GPU_MAX_SCANOUTS],
+}
+
+const READ_RESOURCE_BYTES_PER_PIXEL: usize = 4;
+
+impl RutabagaVirtioGpu {
+    // TODO: this depends on Rutabaga builder, so this will need to be handled at runtime eventually
+    pub const MAX_NUMBER_OF_CAPSETS: u32 = 3;
+
+    fn create_fence_handler(
+        queue_ctl: VringRwLock,
+        fence_state: Arc<Mutex<FenceState>>,
+    ) -> RutabagaFenceHandler {
+        RutabagaFenceHandler::new(move |completed_fence: RutabagaFence| {
+            debug!(
+                "XXX - fence called: id={}, ring_idx={}",
+                completed_fence.fence_id, completed_fence.ring_idx
+            );
+
+            //let mut queue = queue_ctl.lock().unwrap();
+            let mut fence_state = fence_state.lock().unwrap();
+            let mut i = 0;
+
+            let ring = match completed_fence.flags & VIRTIO_GPU_FLAG_INFO_RING_IDX {
+                0 => VirtioGpuRing::Global,
+                _ => VirtioGpuRing::ContextSpecific {
+                    ctx_id: completed_fence.ctx_id,
+                    ring_idx: completed_fence.ring_idx,
+                },
+            };
+
+            while i < fence_state.descs.len() {
+                debug!("XXX - fence_id: {}", fence_state.descs[i].fence_id);
+                if fence_state.descs[i].ring == ring
+                    && fence_state.descs[i].fence_id <= completed_fence.fence_id
+                {
+                    let completed_desc = fence_state.descs.remove(i);
+                    debug!(
+                        "XXX - found fence: desc_index={}",
+                        completed_desc.desc_index
+                    );
+
+                    queue_ctl
+                        .add_used(completed_desc.desc_index, completed_desc.len)
+                        .unwrap();
+
+                    queue_ctl
+                        .signal_used_queue()
+                        .map_err(Error::NotificationFailed)
+                        .unwrap();
+                    debug!("Notification sent");
+                } else {
+                    i += 1;
+                }
+            }
+            // Update the last completed fence for this context
+            fence_state
+                .completed_fences
+                .insert(ring, completed_fence.fence_id);
         })
+    }
+
+    pub fn new(queue_ctl: &VringRwLock) -> Self {
+        let xdg_runtime_dir = match env::var("XDG_RUNTIME_DIR") {
+            Ok(dir) => dir,
+            Err(_) => "/run/user/1000".to_string(),
+        };
+        let wayland_display = match env::var("WAYLAND_DISPLAY") {
+            Ok(display) => display,
+            Err(_) => "wayland-0".to_string(),
+        };
+        let path = PathBuf::from(format!("{}/{}", xdg_runtime_dir, wayland_display));
+
+        let rutabaga_channels: Vec<RutabagaChannel> = vec![RutabagaChannel {
+            base_channel: path,
+            channel_type: RUTABAGA_CHANNEL_TYPE_WAYLAND,
+        }];
+        let rutabaga_channels_opt = Some(rutabaga_channels);
+        let builder = RutabagaBuilder::new(
+            rutabaga_gfx::RutabagaComponentType::VirglRenderer,
+            (RUTABAGA_CAPSET_VIRGL
+                | RUTABAGA_CAPSET_VIRGL2
+                | RUTABAGA_CAPSET_DRM
+                | RUTABAGA_CAPSET_VENUS) as u64,
+        )
+        .set_rutabaga_channels(rutabaga_channels_opt)
+        .set_use_egl(true)
+        .set_use_gles(true)
+        .set_use_glx(true)
+        .set_use_surfaceless(true)
+        .set_use_external_blob(true);
+
+        let fence_state = Arc::new(Mutex::new(Default::default()));
+        let fence = Self::create_fence_handler(queue_ctl.clone(), fence_state.clone());
+        let rutabaga = builder
+            .build(fence, None)
+            .expect("Rutabaga initialization failed!");
+
+        Self {
+            rutabaga,
+            resources: Default::default(),
+            fence_state,
+            scanouts: Default::default(),
+        }
+    }
+
+    // Non-public function -- no doc comment needed!
+    fn result_from_query(&mut self, resource_id: u32) -> GpuResponse {
+        match self.rutabaga.query(resource_id) {
+            Ok(query) => {
+                let mut plane_info = Vec::with_capacity(4);
+                for plane_index in 0..4 {
+                    plane_info.push(GpuResponsePlaneInfo {
+                        stride: query.strides[plane_index],
+                        offset: query.offsets[plane_index],
+                    });
+                }
+                let format_modifier = query.modifier;
+                OkResourcePlaneInfo {
+                    format_modifier,
+                    plane_info,
+                }
+            }
+            Err(_) => OkNoData,
+        }
+    }
+
+    fn read_2d_resource(
+        &mut self,
+        resource_id: u32,
+        rect: &Rectangle,
+        output: &mut [u8],
+    ) -> RutabagaResult<()> {
+        let result_len = rect.width as usize * rect.height as usize * READ_RESOURCE_BYTES_PER_PIXEL;
+        assert!(output.len() >= result_len);
+
+        let transfer = Transfer3D {
+            x: rect.x,
+            y: rect.y,
+            z: 0,
+            w: rect.width,
+            h: rect.height,
+            d: 1,
+            level: 0,
+            stride: rect.width * READ_RESOURCE_BYTES_PER_PIXEL as u32,
+            layer_stride: 0,
+            offset: 0,
+        };
+
+        // ctx_id 0 seems to be special, crosvm uses it for this purpose too
+        self.rutabaga
+            .transfer_read(0, resource_id, transfer, Some(IoSliceMut::new(output)))?;
+
+        Ok(())
+    }
+}
+
+impl VirtioGpu for RutabagaVirtioGpu {
+    fn force_ctx_0(&self) {
+        self.rutabaga.force_ctx_0()
+    }
+
+    fn display_info(&self, display_info: VirtioGpuRespDisplayInfo) -> Vec<(u32, u32, bool)> {
+        display_info
+            .pmodes
+            .iter()
+            .map(|display| (display.r.width, display.r.height, display.enabled == 1))
+            .collect::<Vec<_>>()
+    }
+
+    fn get_edid(
+        &self,
+        gpu_backend: &mut GpuBackend,
+        edid_req: VhostUserGpuEdidRequest,
+    ) -> VirtioGpuResult {
+        debug!("edid request: {edid_req:?}");
+        let edid = gpu_backend.get_edid(&edid_req).map_err(|e| {
+            error!("Failed to get edid from frontend: {}", e);
+            ErrUnspec
+        })?;
+
+        Ok(OkEdid {
+            blob: Box::from(&edid.edid[..edid.size as usize]),
+        })
+    }
+
+    fn set_scanout(
+        &mut self,
+        gpu_backend: &mut GpuBackend,
+        scanout_id: u32,
+        resource_id: u32,
+        rect: Rectangle,
+    ) -> VirtioGpuResult {
+        let scanout = self
+            .scanouts
+            .get_mut(scanout_id as usize)
+            .ok_or(ErrInvalidScanoutId)?;
+
+        // If a resource is already associated with this scanout, make sure to disable this scanout for that resource
+        if let Some(resource_id) = scanout.as_ref().map(|scanout| scanout.resource_id) {
+            let resource = self
+                .resources
+                .get_mut(&resource_id)
+                .ok_or(ErrInvalidResourceId)?;
+
+            resource.scanouts.disable(scanout_id);
+        }
+
+        // Virtio spec: "The driver can use resource_id = 0 to disable a scanout."
+        if resource_id == 0 {
+            *scanout = None;
+            debug!("Disabling scanout scanout_id={scanout_id}");
+            gpu_backend
+                .set_scanout(&VhostUserGpuScanout {
+                    scanout_id,
+                    width: 0,
+                    height: 0,
+                })
+                .map_err(|e| {
+                    error!("Failed to set_scanout: {e:?}");
+                    ErrUnspec
+                })?;
+            return Ok(OkNoData);
+        }
+
+        debug!("Enabling scanout scanout_id={scanout_id}, resource_id={resource_id}: {rect:?}");
+
+        // QEMU doesn't like (it lags) when we call set_scanout while the scanout is enabled
+        if scanout.is_none() {
+            gpu_backend
+                .set_scanout(&VhostUserGpuScanout {
+                    scanout_id,
+                    width: rect.width,
+                    height: rect.height,
+                })
+                .map_err(|e| {
+                    error!("Failed to set_scanout: {e:?}");
+                    ErrUnspec
+                })?;
+        }
+
+        let resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        resource.scanouts.enable(scanout_id);
+        *scanout = Some(VirtioGpuScanout { resource_id, rect });
+        Ok(OkNoData)
+    }
+
+    fn resource_create_3d(
+        &mut self,
+        resource_id: u32,
+        resource_create_3d: ResourceCreate3D,
+    ) -> VirtioGpuResult {
+        self.rutabaga
+            .resource_create_3d(resource_id, resource_create_3d)?;
+
+        let resource = VirtioGpuResource::new(
+            resource_id,
+            resource_create_3d.width,
+            resource_create_3d.height,
+            0,
+        );
+
+        // Rely on rutabaga to check for duplicate resource ids.
+        self.resources.insert(resource_id, resource);
+        Ok(self.result_from_query(resource_id))
+    }
+
+    fn unref_resource(&mut self, resource_id: u32) -> VirtioGpuResult {
+        let resource = self
+            .resources
+            .remove(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        if resource.rutabaga_external_mapping {
+            self.rutabaga.unmap(resource_id)?;
+        }
+
+        self.rutabaga.unref_resource(resource_id)?;
+        Ok(OkNoData)
+    }
+
+    /// If the resource is the scanout resource, flush it to the display.
+    fn flush_resource(
+        &mut self,
+        resource_id: u32,
+        gpu_backend: &mut GpuBackend,
+        rect: Rectangle,
+    ) -> VirtioGpuResult {
+        if resource_id == 0 {
+            return Ok(OkNoData);
+        }
+
+        let resource = self
+            .resources
+            .get(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        for scanout_id in resource.scanouts.iter_enabled() {
+            let mut data =
+                vec![0; rect.width as usize * rect.height as usize * READ_RESOURCE_BYTES_PER_PIXEL];
+
+            if let Err(e) = self.read_2d_resource(resource_id, &rect, &mut data) {
+                log::error!("Failed to read resource {resource_id} for scanout {scanout_id}: {e}");
+                continue;
+            }
+
+            gpu_backend
+                .update_scanout(
+                    &VhostUserGpuUpdate {
+                        scanout_id,
+                        x: rect.x,
+                        y: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                    },
+                    &data,
+                )
+                .map_err(|e| {
+                    error!("Failed to update_scanout: {e:?}");
+                    ErrUnspec
+                })?
+        }
+
+        #[cfg(windows)]
+        match self.rutabaga.resource_flush(resource_id) {
+            Ok(_) => return Ok(OkNoData),
+            Err(RutabagaError::Unsupported) => {}
+            Err(e) => return Err(ErrRutabaga(e)),
+        }
+
+        Ok(OkNoData)
+    }
+
+    fn transfer_write(
+        &mut self,
+        ctx_id: u32,
+        resource_id: u32,
+        mut transfer: Transfer3D,
+    ) -> VirtioGpuResult {
+        trace!("transfer_write ctx_id {ctx_id}, resource_id {resource_id}, {transfer:?}");
+
+        let resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        // FIXME: this is a horrible hack, that makes transfer_read in flush_resource work properly
+        // without this workaround partial transfer_write (not the whole area of the screen) seems
+        // to produce mostly black / empty images
+        if let Some(scanout_id) = resource.scanouts.iter_enabled().next() {
+            let rect = &mut self.scanouts[scanout_id as usize].as_mut().unwrap().rect;
+            transfer.x = 0;
+            transfer.y = 0;
+            transfer.w = rect.width;
+            transfer.h = rect.height;
+        }
+
+        self.rutabaga
+            .transfer_write(ctx_id, resource_id, transfer)?;
+        Ok(OkNoData)
+    }
+
+    fn transfer_read(
+        &mut self,
+        ctx_id: u32,
+        resource_id: u32,
+        transfer: Transfer3D,
+        buf: Option<VolatileSlice>,
+    ) -> VirtioGpuResult {
+        let buf = buf.map(|vs| {
+            IoSliceMut::new(
+                // SAFETY: trivially safe
+                unsafe { std::slice::from_raw_parts_mut(vs.ptr_guard_mut().as_ptr(), vs.len()) },
+            )
+        });
+        self.rutabaga
+            .transfer_read(ctx_id, resource_id, transfer, buf)?;
+        Ok(OkNoData)
+    }
+
+    fn attach_backing(
+        &mut self,
+        resource_id: u32,
+        mem: &GuestMemoryMmap,
+        vecs: Vec<(GuestAddress, usize)>,
+    ) -> VirtioGpuResult {
+        let rutabaga_iovecs = sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?;
+        self.rutabaga.attach_backing(resource_id, rutabaga_iovecs)?;
+        Ok(OkNoData)
+    }
+
+    fn detach_backing(&mut self, resource_id: u32) -> VirtioGpuResult {
+        self.rutabaga.detach_backing(resource_id)?;
+        Ok(OkNoData)
+    }
+
+    fn update_cursor(
+        &mut self,
+        resource_id: u32,
+        gpu_backend: &mut GpuBackend,
+        cursor_pos: VhostUserGpuCursorPos,
+        hot_x: u32,
+        hot_y: u32,
+    ) -> VirtioGpuResult {
+        let mut data = Box::new([0; 4 * 64 * 64]);
+        let cursor_rect = Rectangle {
+            x: 0,
+            y: 0,
+            width: 64,
+            height: 64,
+        };
+
+        self.read_2d_resource(resource_id, &cursor_rect, &mut data[..])
+            .map_err(|e| {
+                error!("Failed to read resource of cursor: {e}");
+                ErrUnspec
+            })?;
+
+        let cursor_update = VhostUserGpuCursorUpdate {
+            pos: cursor_pos,
+            hot_x,
+            hot_y,
+        };
+
+        gpu_backend
+            .cursor_update(&cursor_update, &data)
+            .map_err(|e| {
+                error!("Failed to update cursor pos from frontend: {}", e);
+                ErrUnspec
+            })?;
+
+        Ok(OkNoData)
+    }
+
+    fn move_cursor(
+        &mut self,
+        resource_id: u32,
+        gpu_backend: &mut GpuBackend,
+        cursor: VhostUserGpuCursorPos,
+    ) -> VirtioGpuResult {
+        if resource_id == 0 {
+            gpu_backend.cursor_pos_hide(&cursor).map_err(|e| {
+                error!("Failed to set cursor pos from frontend: {}", e);
+                ErrUnspec
+            })?;
+        } else {
+            gpu_backend.cursor_pos(&cursor).map_err(|e| {
+                error!("Failed to set cursor pos from frontend: {}", e);
+                ErrUnspec
+            })?;
+        }
+
+        Ok(OkNoData)
+    }
+
+    fn resource_assign_uuid(&self, resource_id: u32) -> VirtioGpuResult {
+        if !self.resources.contains_key(&resource_id) {
+            return Err(ErrInvalidResourceId);
+        }
+
+        // TODO(stevensd): use real uuids once the virtio wayland protocol is updated to
+        // handle more than 32 bits. For now, the virtwl driver knows that the uuid is
+        // actually just the resource id.
+        let mut uuid: [u8; 16] = [0; 16];
+        for (idx, byte) in resource_id.to_be_bytes().iter().enumerate() {
+            uuid[12 + idx] = *byte;
+        }
+        Ok(OkResourceUuid { uuid })
+    }
+
+    fn get_capset_info(&self, index: u32) -> VirtioGpuResult {
+        let (capset_id, version, size) = self.rutabaga.get_capset_info(index)?;
+        Ok(OkCapsetInfo {
+            capset_id,
+            version,
+            size,
+        })
+    }
+
+    fn get_capset(&self, capset_id: u32, version: u32) -> VirtioGpuResult {
+        let capset = self.rutabaga.get_capset(capset_id, version)?;
+        Ok(OkCapset(capset))
+    }
+
+    fn create_context(
+        &mut self,
+        ctx_id: u32,
+        context_init: u32,
+        context_name: Option<&str>,
+    ) -> VirtioGpuResult {
+        self.rutabaga
+            .create_context(ctx_id, context_init, context_name)?;
+        Ok(OkNoData)
+    }
+
+    fn destroy_context(&mut self, ctx_id: u32) -> VirtioGpuResult {
+        self.rutabaga.destroy_context(ctx_id)?;
+        Ok(OkNoData)
+    }
+
+    fn context_attach_resource(&mut self, ctx_id: u32, resource_id: u32) -> VirtioGpuResult {
+        self.rutabaga.context_attach_resource(ctx_id, resource_id)?;
+        Ok(OkNoData)
+    }
+
+    fn context_detach_resource(&mut self, ctx_id: u32, resource_id: u32) -> VirtioGpuResult {
+        self.rutabaga.context_detach_resource(ctx_id, resource_id)?;
+        Ok(OkNoData)
+    }
+
+    fn submit_command(
+        &mut self,
+        ctx_id: u32,
+        commands: &mut [u8],
+        fence_ids: &[u64],
+    ) -> VirtioGpuResult {
+        self.rutabaga.submit_command(ctx_id, commands, fence_ids)?;
+        Ok(OkNoData)
+    }
+
+    fn create_fence(&mut self, rutabaga_fence: RutabagaFence) -> VirtioGpuResult {
+        self.rutabaga.create_fence(rutabaga_fence)?;
+        Ok(OkNoData)
+    }
+
+    fn process_fence(
+        &mut self,
+        ring: VirtioGpuRing,
+        fence_id: u64,
+        desc_index: u16,
+        len: u32,
+    ) -> bool {
+        // In case the fence is signaled immediately after creation, don't add a return
+        // FenceDescriptor.
+        let mut fence_state = self.fence_state.lock().unwrap();
+        if fence_id > *fence_state.completed_fences.get(&ring).unwrap_or(&0) {
+            fence_state.descs.push(FenceDescriptor {
+                ring,
+                fence_id,
+                desc_index,
+                len,
+            });
+
+            false
+        } else {
+            true
+        }
+    }
+
+    fn resource_create_blob(
+        &mut self,
+        ctx_id: u32,
+        resource_id: u32,
+        resource_create_blob: ResourceCreateBlob,
+        vecs: Vec<(GuestAddress, usize)>,
+        mem: &GuestMemoryMmap,
+    ) -> VirtioGpuResult {
+        let mut rutabaga_iovecs = None;
+
+        if resource_create_blob.blob_flags & VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE != 0 {
+            panic!("GUEST_HANDLE unimplemented");
+        } else if resource_create_blob.blob_mem != VIRTIO_GPU_BLOB_MEM_HOST3D {
+            rutabaga_iovecs =
+                Some(sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?);
+        }
+
+        self.rutabaga.resource_create_blob(
+            ctx_id,
+            resource_id,
+            resource_create_blob,
+            rutabaga_iovecs,
+            None,
+        )?;
+
+        let resource = VirtioGpuResource::new(resource_id, 0, 0, resource_create_blob.size);
+
+        // Rely on rutabaga to check for duplicate resource ids.
+        self.resources.insert(resource_id, resource);
+        Ok(self.result_from_query(resource_id))
+    }
+
+    fn resource_map_blob(
+        &mut self,
+        resource_id: u32,
+        shm_region: &VirtioShmRegion,
+        offset: u64,
+    ) -> VirtioGpuResult {
+        let resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        let map_info = self.rutabaga.map_info(resource_id).map_err(|_| ErrUnspec)?;
+
+        if let Ok(export) = self.rutabaga.export_blob(resource_id) {
+            if export.handle_type != RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD {
+                let prot = match map_info & RUTABAGA_MAP_ACCESS_MASK {
+                    RUTABAGA_MAP_ACCESS_READ => libc::PROT_READ,
+                    RUTABAGA_MAP_ACCESS_WRITE => libc::PROT_WRITE,
+                    RUTABAGA_MAP_ACCESS_RW => libc::PROT_READ | libc::PROT_WRITE,
+                    _ => panic!("unexpected prot mode for mapping"),
+                };
+
+                if offset + resource.size > shm_region.size as u64 {
+                    error!("mapping DOES NOT FIT");
+                }
+                let addr = shm_region.host_addr + offset;
+                debug!(
+                    "mapping: host_addr={:x}, addr={:x}, size={}",
+                    shm_region.host_addr, addr, resource.size
+                );
+                let ret = unsafe {
+                    libc::mmap(
+                        addr as *mut libc::c_void,
+                        resource.size as usize,
+                        prot,
+                        libc::MAP_SHARED | libc::MAP_FIXED,
+                        export.os_handle.as_raw_fd(),
+                        0 as libc::off_t,
+                    )
+                };
+                if ret == libc::MAP_FAILED {
+                    return Err(ErrUnspec);
+                }
+            } else {
+                return Err(ErrUnspec);
+            }
+        } else {
+            return Err(ErrUnspec);
+        }
+
+        resource.shmem_offset = Some(offset);
+        // Access flags not a part of the virtio-gpu spec.
+        Ok(OkMapInfo {
+            map_info: map_info & RUTABAGA_MAP_CACHE_MASK,
+        })
+    }
+
+    fn resource_unmap_blob(
+        &mut self,
+        resource_id: u32,
+        shm_region: &VirtioShmRegion,
+    ) -> VirtioGpuResult {
+        let resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        let shmem_offset = resource.shmem_offset.ok_or(ErrUnspec)?;
+
+        let addr = shm_region.host_addr + shmem_offset;
+
+        let ret = unsafe {
+            libc::mmap(
+                addr as *mut libc::c_void,
+                resource.size as usize,
+                libc::PROT_NONE,
+                libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_FIXED,
+                -1,
+                0_i64,
+            )
+        };
+        if ret == libc::MAP_FAILED {
+            panic!("UNMAP failed");
+        }
+
+        resource.shmem_offset = None;
+
+        Ok(OkNoData)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::sync::{Arc, Mutex};
 
-    #[test]
-    fn test_virtio_gpu_config() {
-        // Test VirtioGpuConfig size
-        assert_eq!(std::mem::size_of::<VirtioGpuConfig>(), 16);
+    use super::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuResource, VirtioGpuRing, VirtioShmRegion};
+    use rutabaga_gfx::{
+        ResourceCreateBlob, RutabagaBuilder, RutabagaComponentType, RutabagaHandler,
+    };
+    use vm_memory::{GuestAddress, GuestMemoryMmap};
+
+    fn new_2d() -> RutabagaVirtioGpu {
+        let rutabaga = RutabagaBuilder::new(RutabagaComponentType::Rutabaga2D, 0)
+            .build(RutabagaHandler::new(|_| {}), None)
+            .unwrap();
+        RutabagaVirtioGpu {
+            rutabaga,
+            resources: Default::default(),
+            fence_state: Arc::new(Mutex::new(Default::default())),
+            scanouts: Default::default(),
+        }
     }
 
     #[test]
-    fn test_virtio_gpu_ctrl_hdr() {
-        // Test VirtioGpuCtrlHdr size
-        assert_eq!(std::mem::size_of::<VirtioGpuCtrlHdr>(), 24);
+    fn test_gpu_backend_success() {
+        let mut virtio_gpu = new_2d();
+        virtio_gpu.get_capset(0, 0).unwrap();
+        virtio_gpu.process_fence(VirtioGpuRing::Global, 0, 0, 0);
     }
 
     #[test]
-    fn test_virtio_gpu_command_type_try_from() {
-        // Test conversion from u32 to GpuCommandType
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_GET_DISPLAY_INFO)),
-            Ok(GpuCommandType::GetDisplayInfo)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_GET_DISPLAY_INFO)),
-            Ok(GpuCommandType::GetDisplayInfo)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D)),
-            Ok(GpuCommandType::ResourceCreate2d)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_UNREF)),
-            Ok(GpuCommandType::ResourceUnref)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_SET_SCANOUT)),
-            Ok(GpuCommandType::SetScanout)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_SET_SCANOUT_BLOB)),
-            Ok(GpuCommandType::SetScanoutBlob)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_FLUSH)),
-            Ok(GpuCommandType::ResourceFlush)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D)),
-            Ok(GpuCommandType::TransferToHost2d)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING)),
-            Ok(GpuCommandType::ResourceAttachBacking)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING)),
-            Ok(GpuCommandType::ResourceDetachBacking)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_GET_CAPSET)),
-            Ok(GpuCommandType::GetCapset)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_GET_CAPSET_INFO)),
-            Ok(GpuCommandType::GetCapsetInfo)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_GET_EDID)),
-            Ok(GpuCommandType::GetEdid)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_CTX_CREATE)),
-            Ok(GpuCommandType::CtxCreate)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_CTX_DESTROY)),
-            Ok(GpuCommandType::CtxDestroy)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE)),
-            Ok(GpuCommandType::CtxAttachResource)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE)),
-            Ok(GpuCommandType::CtxDetachResource)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB)),
-            Ok(GpuCommandType::ResourceCreateBlob)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D)),
-            Ok(GpuCommandType::TransferToHost3d)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D)),
-            Ok(GpuCommandType::TransferFromHost3d)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_SUBMIT_3D)),
-            Ok(GpuCommandType::CmdSubmit3d)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB)),
-            Ok(GpuCommandType::ResourceMapBlob)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_UNMAP_BLOB)),
-            Ok(GpuCommandType::ResourceUnmapBlob)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_UPDATE_CURSOR)),
-            Ok(GpuCommandType::UpdateCursor)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_MOVE_CURSOR)),
-            Ok(GpuCommandType::MoveCursor)
-        );
-        assert_eq!(
-            GpuCommandType::try_from(Le32::from(VIRTIO_GPU_CMD_RESOURCE_ASSIGN_UUID)),
-            Ok(GpuCommandType::ResourceAssignUuid)
-        );
-        // Test an unknown command
-        assert!(matches!(
-            GpuCommandType::try_from(Le32::from(0x12345678)),
-            Err(InvalidCommandType(0x12345678))
-        ));
-    }
+    fn test_gpu_backend_failure() {
+        let mut virtio_gpu = new_2d();
+        //rework, based on capset info
+        virtio_gpu.get_capset_info(0).unwrap_err();
+        let resource_create_blob = ResourceCreateBlob::default();
+        let vecs = vec![(GuestAddress(0), 10)];
+        let mem = &GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x1000)])
+            .expect("Failed to create guest memory");
+        virtio_gpu
+            .resource_create_blob(1, 1, resource_create_blob, vecs, mem)
+            .unwrap_err();
 
-    #[test]
-    fn test_invalid_command_type_display() {
-        let error = InvalidCommandType(42);
-        assert_eq!(format!("{}", error), "Invalid command type 42");
+        let shm_region = VirtioShmRegion::default();
+        let resource = VirtioGpuResource::default();
+        virtio_gpu.resources.insert(1, resource);
+        virtio_gpu.resource_map_blob(1, &shm_region, 0).unwrap_err();
+        virtio_gpu.resource_unmap_blob(1, &shm_region).unwrap_err();
+        let mut cmd_buf = vec![0; 10];
+        let fence_ids: Vec<u64> = Vec::with_capacity(0);
+        virtio_gpu
+            .submit_command(0, &mut cmd_buf[..], &fence_ids)
+            .unwrap_err();
     }
 }
