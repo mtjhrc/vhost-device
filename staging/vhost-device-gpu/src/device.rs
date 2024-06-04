@@ -546,7 +546,7 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
     ) -> IoResult<()> {
         // We use thread_local here because it is the easiest way to handle VirtioGpu being !Send
         thread_local! {
-            static VIRTIO_GPU_REF: RefCell<Option<RutabagaVirtioGpu>> = RefCell::new(None);
+            static VIRTIO_GPU_REF: RefCell<Option<RutabagaVirtioGpu>> = const { RefCell::new(None) };
         }
 
         debug!("Handle event called");

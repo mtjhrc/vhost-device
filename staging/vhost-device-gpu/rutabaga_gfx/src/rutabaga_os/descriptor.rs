@@ -35,7 +35,9 @@ pub trait AsRawDescriptor {
     fn as_raw_descriptor(&self) -> RawDescriptor;
 }
 
+
 /// A trait similar to `AsRawDescriptor` but supports an arbitrary number of descriptors.
+#[allow(dead_code)]
 pub trait AsRawDescriptors {
     /// Returns the underlying raw descriptors.
     ///
