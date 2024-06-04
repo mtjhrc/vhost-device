@@ -188,7 +188,13 @@ impl VhostUserGpuBackend {
             ),
             GpuCommand::TransferToHost2d(info) => {
                 let resource_id = info.resource_id;
-                let transfer = Transfer3D::new_2d(info.r.x, info.r.y, info.r.width, info.r.height);
+                let transfer = Transfer3D::new_2d(
+                    info.r.x,
+                    info.r.y,
+                    info.r.width,
+                    info.r.height,
+                    info.offset,
+                );
                 virtio_gpu.transfer_write(0, resource_id, transfer)
             }
             GpuCommand::ResourceAttachBacking(info, iovecs) => {
@@ -546,7 +552,7 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
     ) -> IoResult<()> {
         // We use thread_local here because it is the easiest way to handle VirtioGpu being !Send
         thread_local! {
-            static VIRTIO_GPU_REF: RefCell<Option<RutabagaVirtioGpu>> = RefCell::new(None);
+            static VIRTIO_GPU_REF: RefCell<Option<RutabagaVirtioGpu>> = const { RefCell::new(None) };
         }
 
         debug!("Handle event called");

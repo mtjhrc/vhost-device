@@ -585,7 +585,7 @@ pub struct Transfer3D {
 impl Transfer3D {
     /// Constructs a 2 dimensional XY box in 3 dimensional space with unit depth and zero
     /// displacement on the Z axis.
-    pub fn new_2d(x: u32, y: u32, w: u32, h: u32) -> Transfer3D {
+    pub fn new_2d(x: u32, y: u32, w: u32, h: u32, offset: u64) -> Transfer3D {
         Transfer3D {
             x,
             y,
@@ -596,7 +596,7 @@ impl Transfer3D {
             level: 0,
             stride: 0,
             layer_stride: 0,
-            offset: 0,
+            offset,
         }
     }
 
