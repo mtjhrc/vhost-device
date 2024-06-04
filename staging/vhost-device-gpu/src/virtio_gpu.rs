@@ -317,7 +317,6 @@ impl VirtioGpuResource {
 
 pub struct VirtioGpuScanout {
     resource_id: u32,
-    rect: Rectangle,
 }
 
 pub struct RutabagaVirtioGpu {
@@ -571,7 +570,7 @@ impl VirtioGpu for RutabagaVirtioGpu {
             .ok_or(ErrInvalidResourceId)?;
 
         resource.scanouts.enable(scanout_id);
-        *scanout = Some(VirtioGpuScanout { resource_id, rect });
+        *scanout = Some(VirtioGpuScanout { resource_id });
         Ok(OkNoData)
     }
 
@@ -665,25 +664,9 @@ impl VirtioGpu for RutabagaVirtioGpu {
         &mut self,
         ctx_id: u32,
         resource_id: u32,
-        mut transfer: Transfer3D,
+        transfer: Transfer3D,
     ) -> VirtioGpuResult {
         trace!("transfer_write ctx_id {ctx_id}, resource_id {resource_id}, {transfer:?}");
-
-        let resource = self
-            .resources
-            .get_mut(&resource_id)
-            .ok_or(ErrInvalidResourceId)?;
-
-        // FIXME: this is a horrible hack, that makes transfer_read in flush_resource work properly
-        // without this workaround partial transfer_write (not the whole area of the screen) seems
-        // to produce mostly black / empty images
-        if let Some(scanout_id) = resource.scanouts.iter_enabled().next() {
-            let rect = &mut self.scanouts[scanout_id as usize].as_mut().unwrap().rect;
-            transfer.x = 0;
-            transfer.y = 0;
-            transfer.w = rect.width;
-            transfer.h = rect.height;
-        }
 
         self.rutabaga
             .transfer_write(ctx_id, resource_id, transfer)?;
