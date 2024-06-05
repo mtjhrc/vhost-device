@@ -5,10 +5,13 @@
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
 use log::{debug, error, trace, warn};
+use std::os::fd::AsRawFd;
+use std::sync::{Arc, Mutex};
 use std::{
     cell::RefCell,
     convert,
     io::{self, Result as IoResult},
+    sync,
 };
 
 use rutabaga_gfx::{
@@ -21,7 +24,7 @@ use vhost::vhost_user::{
     message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures},
     GpuBackend,
 };
-use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
+use vhost_user_backend::{VhostUserBackend, VringEpollHandler, VringRwLock, VringT};
 use virtio_bindings::{
     bindings::virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_RING_RESET, VIRTIO_F_VERSION_1},
     bindings::virtio_ring::{VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC},
@@ -44,7 +47,7 @@ use crate::{
         GpuResponseEncodeError, VirtioGpuResult,
     },
     protocol::{
-        VirtioGpuConfig, CONTROL_QUEUE, CURSOR_QUEUE, NUM_QUEUES, QUEUE_SIZE,
+        VirtioGpuConfig, CONTROL_QUEUE, CURSOR_QUEUE, NUM_QUEUES, POLL_EVENT, QUEUE_SIZE,
         VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX, VIRTIO_GPU_MAX_SCANOUTS,
     },
     virtio_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing, VirtioShmRegion},
@@ -93,6 +96,8 @@ pub enum Error {
     GpuResponseEncode(GpuResponseEncodeError),
     #[error("Failed add used chain to queue: {0}")]
     QueueAddUsed(virtio_queue::Error),
+    #[error("Failed register epoll listener: {0}")]
+    RegisterEpollListener(io::Error),
 }
 
 impl convert::From<Error> for io::Error {
@@ -101,7 +106,7 @@ impl convert::From<Error> for io::Error {
     }
 }
 
-pub struct VhostUserGpuBackend {
+struct VhostUserGpuBackendInner {
     virtio_cfg: VirtioGpuConfig,
     event_idx: bool,
     gpu_backend: Option<GpuBackend>,
@@ -110,10 +115,17 @@ pub struct VhostUserGpuBackend {
     shm_region: Option<VirtioShmRegion>,
 }
 
+pub struct VhostUserGpuBackend {
+    inner: Mutex<VhostUserGpuBackendInner>,
+    // this uses sync::Weak to avoid a reference cycle
+    epoll_handler: Mutex<sync::Weak<VringEpollHandler<Arc<Self>>>>,
+    poll_event_fd: Mutex<Option<EventFd>>,
+}
+
 impl VhostUserGpuBackend {
-    pub fn new(gpu_config: GpuConfig) -> Result<Self> {
+    pub fn new(gpu_config: GpuConfig) -> Result<Arc<Self>> {
         log::trace!("VhostUserGpuBackend::new(config = {:?})", &gpu_config);
-        Ok(VhostUserGpuBackend {
+        let inner = VhostUserGpuBackendInner {
             virtio_cfg: VirtioGpuConfig {
                 events_read: 0.into(),
                 events_clear: 0.into(),
@@ -125,9 +137,24 @@ impl VhostUserGpuBackend {
             exit_event: EventFd::new(EFD_NONBLOCK).map_err(|_| Error::EventFdFailed)?,
             mem: None,
             shm_region: None,
-        })
+        };
+
+        Ok(Arc::new(Self {
+            inner: Mutex::new(inner),
+            epoll_handler: Mutex::new(sync::Weak::new()),
+            poll_event_fd: Mutex::new(None),
+        }))
     }
 
+    pub fn set_epoll_handler(&self, epoll_handlers: &[Arc<VringEpollHandler<Arc<Self>>>]) {
+        // We only expect 1 thread to which we want to register all handlers
+        assert_eq!(epoll_handlers.len(), 1);
+        let mut handler = self.epoll_handler.lock().unwrap();
+        *handler = Arc::downgrade(&epoll_handlers[0]);
+    }
+}
+
+impl VhostUserGpuBackendInner {
     fn process_gpu_command(
         &mut self,
         virtio_gpu: &mut RutabagaVirtioGpu,
@@ -464,14 +491,17 @@ impl VhostUserGpuBackend {
         Ok(())
     }
 
-    fn handle_queue_event(
+    fn handle_event(
         &mut self,
         device_event: u16,
         virtio_gpu: &mut RutabagaVirtioGpu,
-        vring: &VringRwLock,
+        vrings: &[VringRwLock],
     ) -> IoResult<()> {
         match device_event {
             CONTROL_QUEUE | CURSOR_QUEUE => {
+                let vring = &vrings
+                    .get(device_event as usize)
+                    .ok_or_else(|| Error::HandleEventUnknown)?;
                 if self.event_idx {
                     // vm-virtio's Queue implementation only checks avail_index
                     // once, so to properly support EVENT_IDX we need to keep
@@ -489,6 +519,10 @@ impl VhostUserGpuBackend {
                     self.process_queue(virtio_gpu, vring)?;
                 }
             }
+            POLL_EVENT => {
+                trace!("Received RUTABAGA_POLL_EVENT");
+                virtio_gpu.event_poll()
+            }
             _ => {
                 warn!("unhandled device_event: {}", device_event);
                 return Err(Error::HandleEventUnknown.into());
@@ -497,10 +531,62 @@ impl VhostUserGpuBackend {
 
         Ok(())
     }
+
+    fn lazy_init_and_handle_event(
+        &mut self,
+        device_event: u16,
+        evset: EventSet,
+        vrings: &[VringRwLock],
+        _thread_id: usize,
+    ) -> IoResult<Option<EventFd>> {
+        // We use thread_local here because it is the easiest way to handle VirtioGpu being !Send
+        thread_local! {
+            static VIRTIO_GPU_REF: RefCell<Option<RutabagaVirtioGpu>> = const { RefCell::new(None) };
+        }
+
+        debug!("Handle event called");
+        if evset != EventSet::IN {
+            return Err(Error::HandleEventNotEpollIn.into());
+        };
+
+        let mut event_poll_fd = None;
+        VIRTIO_GPU_REF.with_borrow_mut(|maybe_virtio_gpu| {
+            // Lazy initializes the virtio_gpu
+            let virtio_gpu = maybe_virtio_gpu.get_or_insert_with(|| {
+                // We pass only the CONTROL_QUEUE vring to RutabagaVirtioGpu, because we only expect
+                // to process fences for that queue.
+                let control_vring = &vrings[CONTROL_QUEUE as usize];
+
+                // VirtioGpu::new can be called once per process (otherwise it panics),
+                // so if somehow another thread accidentally wants to create another gpu here,
+                // it will panic anyway
+                let virtio_gpu = RutabagaVirtioGpu::new(control_vring);
+                event_poll_fd = virtio_gpu.get_event_poll_fd();
+                virtio_gpu
+            });
+
+            self.handle_event(device_event, virtio_gpu, vrings)
+        })?;
+
+        Ok(event_poll_fd)
+    }
+
+    fn get_config(&self, offset: u32, size: u32) -> Vec<u8> {
+        let offset = offset as usize;
+        let size = size as usize;
+
+        let buf = self.virtio_cfg.as_slice();
+
+        if offset + size > buf.len() {
+            return Vec::new();
+        }
+
+        buf[offset..offset + size].to_vec()
+    }
 }
 
 /// VhostUserBackendMut trait methods
-impl VhostUserBackendMut for VhostUserGpuBackend {
+impl VhostUserBackend for VhostUserGpuBackend {
     type Vring = VringRwLock;
     type Bitmap = ();
 
@@ -532,67 +618,55 @@ impl VhostUserBackendMut for VhostUserGpuBackend {
         VhostUserProtocolFeatures::CONFIG | VhostUserProtocolFeatures::MQ
     }
 
-    fn set_event_idx(&mut self, enabled: bool) {
-        self.event_idx = enabled;
+    fn set_event_idx(&self, enabled: bool) {
+        self.inner.lock().unwrap().event_idx = enabled;
         debug!("Event idx set to: {}", enabled);
     }
 
-    fn update_memory(&mut self, mem: GuestMemoryAtomic<GuestMemoryMmap>) -> IoResult<()> {
+    fn update_memory(&self, mem: GuestMemoryAtomic<GuestMemoryMmap>) -> IoResult<()> {
         debug!("Update memory called");
-        self.mem = Some(mem);
+        self.inner.lock().unwrap().mem = Some(mem);
         Ok(())
     }
 
-    fn handle_event(
-        &mut self,
-        device_event: u16,
-        evset: EventSet,
-        vrings: &[VringRwLock],
-        _thread_id: usize,
-    ) -> IoResult<()> {
-        // We use thread_local here because it is the easiest way to handle VirtioGpu being !Send
-        thread_local! {
-            static VIRTIO_GPU_REF: RefCell<Option<RutabagaVirtioGpu>> = const { RefCell::new(None) };
-        }
-
-        debug!("Handle event called");
-        if evset != EventSet::IN {
-            return Err(Error::HandleEventNotEpollIn.into());
-        };
-        let vring = &vrings
-            .get(device_event as usize)
-            .ok_or_else(|| Error::HandleEventUnknown)?;
-        VIRTIO_GPU_REF.with_borrow_mut(|maybe_virtio_gpu| {
-            // Lazy initializes the virtio_gpu
-            let virtio_gpu = maybe_virtio_gpu.get_or_insert_with(|| {
-                // VirtioGpu::new can be called once per process (otherwise it panics),
-                // so if somehow another thread accidentally wants to create another gpu here,
-                // it will panic anyway
-                RutabagaVirtioGpu::new(vring)
-            });
-            self.handle_queue_event(device_event, virtio_gpu, vring)
-        })?;
-        Ok(())
+    fn set_gpu_socket(&self, backend: GpuBackend) {
+        self.inner.lock().unwrap().gpu_backend = Some(backend);
     }
 
-    fn set_gpu_socket(&mut self, backend: GpuBackend) {
-        self.gpu_backend = Some(backend);
-    }
     fn get_config(&self, offset: u32, size: u32) -> Vec<u8> {
-        let offset = offset as usize;
-        let size = size as usize;
-
-        let buf = self.virtio_cfg.as_slice();
-
-        if offset + size > buf.len() {
-            return Vec::new();
-        }
-
-        buf[offset..offset + size].to_vec()
+        self.inner.lock().unwrap().get_config(offset, size)
     }
 
     fn exit_event(&self, _thread_index: usize) -> Option<EventFd> {
-        self.exit_event.try_clone().ok()
+        self.inner.lock().unwrap().exit_event.try_clone().ok()
+    }
+
+    fn handle_event(
+        &self,
+        device_event: u16,
+        evset: EventSet,
+        vrings: &[Self::Vring],
+        thread_id: usize,
+    ) -> IoResult<()> {
+        let poll_event_fd = self.inner.lock().unwrap().lazy_init_and_handle_event(
+            device_event,
+            evset,
+            vrings,
+            thread_id,
+        )?;
+
+        if let Some(poll_event_fd) = poll_event_fd {
+            let epoll_handler = self.epoll_handler.lock().unwrap();
+            let epoll_handler = epoll_handler.upgrade().unwrap();
+            epoll_handler
+                .register_listener(poll_event_fd.as_raw_fd(), EventSet::IN, POLL_EVENT as u64)
+                .map_err(Error::RegisterEpollListener)?;
+            debug!("Registered POLL_EVENT on fd: {}", poll_event_fd.as_raw_fd());
+            // store the fd, so it is not closed after exiting this scope
+            self.poll_event_fd.lock().unwrap().replace(poll_event_fd);
+        }
+
+        Ok(())
     }
 }
 
@@ -606,7 +680,7 @@ mod tests {
         mem::size_of,
         sync::{Arc, Mutex},
     };
-    use vhost_user_backend::{VhostUserBackendMut, VringRwLock, VringT};
+    use vhost_user_backend::{VringRwLock, VringT};
     use virtio_bindings::bindings::virtio_ring::{VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
     use virtio_queue::{mock::MockSplitQueue, Descriptor, DescriptorChain, Queue};
     use vm_memory::{
@@ -641,7 +715,7 @@ mod tests {
     unsafe impl ByteValued for VirtioGpuInHdr {}
 
     fn init() -> (
-        VhostUserGpuBackend,
+        Arc<VhostUserGpuBackend>,
         GuestMemoryAtomic<GuestMemoryMmap>,
         VringRwLock,
     ) {
@@ -711,8 +785,11 @@ mod tests {
     }
 
     // Prepares a single chain of descriptors
-    fn prepare_desc_chain(buf: &mut Vec<u8>, cmd_type: u32) -> (VhostUserGpuBackend, VringRwLock) {
-        let (mut backend, mem, vring) = init();
+    fn prepare_desc_chain(
+        buf: &mut Vec<u8>,
+        cmd_type: u32,
+    ) -> (Arc<VhostUserGpuBackend>, VringRwLock) {
+        let (backend, mem, vring) = init();
         let mem_handle = mem.memory();
         let vq = MockSplitQueue::new(&*mem_handle, 16);
         let next_addr = vq.desc_table().total_size() + 0x100;
@@ -791,9 +868,9 @@ mod tests {
 
     #[test]
     fn test_process_queue_chain() {
-        let (mut backend, mem, _) = init();
-
+        let (backend, mem, _) = init();
         backend.update_memory(mem.clone()).unwrap();
+        let mut backend_inner = backend.inner.lock().unwrap();
 
         let vring = VringRwLock::new(mem.clone(), 0x1000).unwrap();
         vring.set_queue_info(0x100, 0x200, 0x300).unwrap();
@@ -845,7 +922,7 @@ mod tests {
             let mut virtio_gpu = new_2d();
             let mut signal_used_queue = true;
 
-            backend
+            backend_inner
                 .process_queue_chain(
                     &mut virtio_gpu,
                     &mem,
@@ -863,18 +940,22 @@ mod tests {
     fn test_process_queue() {
         // Test process_queue functionality
         let mut buf: Vec<u8> = vec![0; 30];
-        let (mut backend, vring) = prepare_desc_chain(&mut buf, 0);
+        let (backend, vring) = prepare_desc_chain(&mut buf, 0);
+        let mut backend_inner = backend.inner.lock().unwrap();
 
         let mut virtio_gpu = new_2d();
-        backend.process_queue(&mut virtio_gpu, &vring).unwrap();
+        backend_inner
+            .process_queue(&mut virtio_gpu, &vring)
+            .unwrap();
     }
 
     #[test]
     #[ignore = "This test needs to modified to mock GpuBackend"]
     fn test_process_gpu_command() {
-        let (mut backend, mem, _) = init();
+        let (backend, mem, _) = init();
+        let mut backend_inner = backend.inner.lock().unwrap();
 
-        backend.mem = Some(mem.clone());
+        backend_inner.mem = Some(mem.clone());
         let mem = mem.memory().into_inner();
         let mut virtio_gpu = new_2d();
         let hdr = virtio_gpu_ctrl_hdr::default();
@@ -886,7 +967,7 @@ mod tests {
             GpuCommand::ResourceCreate3d(virtio_gpu_resource_create_3d::default()),
         ];
         for cmd in gpu_cmd {
-            backend
+            backend_inner
                 .process_gpu_command(&mut virtio_gpu, &mem, hdr, cmd)
                 .unwrap();
         }
@@ -894,9 +975,10 @@ mod tests {
 
     #[test]
     fn test_process_gpu_command_failure() {
-        let (mut backend, mem, _) = init();
+        let (backend, mem, _) = init();
+        let mut backend_inner = backend.inner.lock().unwrap();
+        backend_inner.mem = Some(mem.clone());
 
-        backend.mem = Some(mem.clone());
         let mem = mem.memory().into_inner();
         let mut virtio_gpu = new_2d();
         let hdr = virtio_gpu_ctrl_hdr::default();
@@ -920,7 +1002,7 @@ mod tests {
             },
         ];
         for cmd in gpu_cmd {
-            backend
+            backend_inner
                 .process_gpu_command(&mut virtio_gpu, &mem, hdr, cmd)
                 .unwrap_err();
         }
@@ -929,7 +1011,7 @@ mod tests {
     #[test]
     fn verify_backend() {
         let gpu_config = GpuConfig::new(SOCKET_PATH.into());
-        let mut backend = VhostUserGpuBackend::new(gpu_config).unwrap();
+        let backend = VhostUserGpuBackend::new(gpu_config).unwrap();
 
         assert_eq!(backend.num_queues(), NUM_QUEUES);
         assert_eq!(backend.max_queue_size(), QUEUE_SIZE);
@@ -942,7 +1024,7 @@ mod tests {
         assert_eq!(backend.get_config(0, 0), vec![]);
 
         backend.set_event_idx(true);
-        assert!(backend.event_idx);
+        assert!(backend.inner.lock().unwrap().event_idx);
 
         assert!(backend.exit_event(0).is_some());
 
@@ -984,7 +1066,7 @@ mod tests {
 
     #[test]
     fn gpu_command_encode() {
-        let (mut backend, mem, _) = init();
+        let (backend, mem, _) = init();
         backend.update_memory(mem.clone()).unwrap();
 
         let mut buf: Vec<u8> = vec![0; 2048];

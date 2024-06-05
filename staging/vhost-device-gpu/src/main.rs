@@ -4,11 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
 use log::{error, info};
-use std::{
-    path::PathBuf,
-    process::exit,
-    sync::{Arc, RwLock},
-};
+use std::{path::PathBuf, process::exit};
 
 use clap::Parser;
 use thiserror::Error as ThisError;
@@ -51,18 +47,17 @@ impl TryFrom<GpuArgs> for GpuConfig {
 
 fn start_backend(config: GpuConfig) -> Result<()> {
     info!("Starting backend");
-    let backend = Arc::new(RwLock::new(
-        VhostUserGpuBackend::new(config.clone()).map_err(Error::CouldNotCreateBackend)?,
-    ));
-
+    let backend = VhostUserGpuBackend::new(config.clone()).map_err(Error::CouldNotCreateBackend)?;
     let socket = config.get_socket_path();
 
     let mut daemon = VhostUserDaemon::new(
         String::from("vhost-device-gpu-backend"),
-        backend,
+        backend.clone(),
         GuestMemoryAtomic::new(GuestMemoryMmap::new()),
     )
     .map_err(Error::CouldNotCreateDaemon)?;
+
+    backend.set_epoll_handler(&daemon.get_epoll_handlers());
 
     daemon.serve(socket).map_err(Error::ServeFailed)?;
     Ok(())
