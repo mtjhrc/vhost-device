@@ -527,7 +527,7 @@ impl VhostUserGpuBackendInner {
         if evset != EventSet::IN {
             return Err(Error::HandleEventNotEpollIn.into());
         };
-        let vring = &vrings
+        let event_vring = &vrings
             .get(device_event as usize)
             .ok_or_else(|| Error::HandleEventUnknown)?;
         VIRTIO_GPU_REF.with_borrow_mut(|maybe_virtio_gpu| {
@@ -536,9 +536,11 @@ impl VhostUserGpuBackendInner {
                 // VirtioGpu::new can be called once per process (otherwise it panics),
                 // so if somehow another thread accidentally wants to create another gpu here,
                 // it will panic anyway
-                RutabagaVirtioGpu::new(vring)
+                // We currently pass the CONTROL_QUEUE vring to RutabagaVirtioGpu, because we only
+                // expect to process fences for that queue.
+                RutabagaVirtioGpu::new(&vrings[CONTROL_QUEUE as usize])
             });
-            self.handle_queue_event(device_event, virtio_gpu, vring)
+            self.handle_queue_event(device_event, virtio_gpu, event_vring)
         })?;
         Ok(())
     }
