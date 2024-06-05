@@ -13,7 +13,6 @@ use libc::c_void;
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaChannel,
     RutabagaFence, RutabagaFenceHandler, RutabagaIovec, RutabagaResult, Transfer3D,
-    RUTABAGA_CAPSET_DRM, RUTABAGA_CAPSET_VENUS, RUTABAGA_CAPSET_VIRGL, RUTABAGA_CAPSET_VIRGL2,
     RUTABAGA_CHANNEL_TYPE_WAYLAND, RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_ACCESS_READ,
     RUTABAGA_MAP_ACCESS_RW, RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK,
     RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
@@ -401,19 +400,13 @@ impl RutabagaVirtioGpu {
             channel_type: RUTABAGA_CHANNEL_TYPE_WAYLAND,
         }];
         let rutabaga_channels_opt = Some(rutabaga_channels);
-        let builder = RutabagaBuilder::new(
-            rutabaga_gfx::RutabagaComponentType::VirglRenderer,
-            (RUTABAGA_CAPSET_VIRGL
-                | RUTABAGA_CAPSET_VIRGL2
-                | RUTABAGA_CAPSET_DRM
-                | RUTABAGA_CAPSET_VENUS) as u64,
-        )
-        .set_rutabaga_channels(rutabaga_channels_opt)
-        .set_use_egl(true)
-        .set_use_gles(true)
-        .set_use_glx(true)
-        .set_use_surfaceless(true)
-        .set_use_external_blob(true);
+        let builder = RutabagaBuilder::new(rutabaga_gfx::RutabagaComponentType::VirglRenderer, 0)
+            .set_rutabaga_channels(rutabaga_channels_opt)
+            .set_use_egl(true)
+            .set_use_gles(true)
+            .set_use_glx(true)
+            .set_use_surfaceless(true)
+            .set_use_external_blob(true);
 
         let fence_state = Arc::new(Mutex::new(Default::default()));
         let fence = Self::create_fence_handler(queue_ctl.clone(), fence_state.clone());
