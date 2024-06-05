@@ -69,6 +69,7 @@ pub const NUM_QUEUES: usize = 2;
 
 pub const CONTROL_QUEUE: u16 = 0;
 pub const CURSOR_QUEUE: u16 = 1;
+pub const POLL_EVENT: u16 = NUM_QUEUES as u16 + 1;
 
 pub const VIRTIO_GPU_MAX_SCANOUTS: usize = 16;
 

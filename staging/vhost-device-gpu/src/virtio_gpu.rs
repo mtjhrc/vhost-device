@@ -3,7 +3,7 @@ use std::{
     collections::BTreeMap,
     env,
     io::IoSliceMut,
-    os::fd::AsRawFd,
+    os::fd::{AsRawFd, FromRawFd},
     path::PathBuf,
     result::Result,
     sync::{Arc, Mutex},
@@ -12,8 +12,8 @@ use std::{
 use libc::c_void;
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaChannel,
-    RutabagaFence, RutabagaFenceHandler, RutabagaIovec, RutabagaResult, Transfer3D,
-    RUTABAGA_CHANNEL_TYPE_WAYLAND, RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_ACCESS_READ,
+    RutabagaFence, RutabagaFenceHandler, RutabagaIntoRawDescriptor, RutabagaIovec, RutabagaResult,
+    Transfer3D, RUTABAGA_CHANNEL_TYPE_WAYLAND, RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_ACCESS_READ,
     RUTABAGA_MAP_ACCESS_RW, RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK,
     RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
 };
@@ -27,6 +27,7 @@ use vhost::vhost_user::{
 use vhost_user_backend::{VringRwLock, VringT};
 use virtio_bindings::virtio_gpu::VIRTIO_GPU_BLOB_MEM_HOST3D;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
+use vmm_sys_util::eventfd::EventFd;
 
 use crate::device::Error;
 use crate::protocol::{
@@ -244,6 +245,12 @@ pub trait VirtioGpu {
         context_init: u32,
         context_name: Option<&str>,
     ) -> VirtioGpuResult;
+
+    /// Get an EventFd descriptor, that signals when to call event_poll.
+    fn get_event_poll_fd(&self) -> Option<EventFd>;
+
+    /// Polls the Rutabaga backend.
+    fn event_poll(&self);
 }
 
 #[derive(Clone, Default)]
@@ -973,6 +980,18 @@ impl VirtioGpu for RutabagaVirtioGpu {
         resource.shmem_offset = None;
 
         Ok(OkNoData)
+    }
+
+    fn get_event_poll_fd(&self) -> Option<EventFd> {
+        self.rutabaga.poll_descriptor().map(|fd| {
+            // SAFETY: Safe, the fd should be valid, because Rutabaga guarantees it.
+            // into_raw_descriptor() returns a RawFd and makes sure SafeDescriptor::drop doesn't run.
+            unsafe { EventFd::from_raw_fd(fd.into_raw_descriptor()) }
+        })
+    }
+
+    fn event_poll(&self) {
+        self.rutabaga.event_poll()
     }
 }
 

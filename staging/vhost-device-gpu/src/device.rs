@@ -9,7 +9,8 @@ use std::{
     cell::RefCell,
     convert,
     io::{self, Result as IoResult},
-    sync::{Arc, Mutex},
+    os::fd::AsRawFd,
+    sync::{self, Arc, Mutex},
 };
 
 use rutabaga_gfx::{
@@ -22,7 +23,7 @@ use vhost::vhost_user::{
     message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures},
     GpuBackend,
 };
-use vhost_user_backend::{VhostUserBackend, VringRwLock, VringT};
+use vhost_user_backend::{VhostUserBackend, VringEpollHandler, VringRwLock, VringT};
 use virtio_bindings::{
     bindings::virtio_config::{VIRTIO_F_NOTIFY_ON_EMPTY, VIRTIO_F_RING_RESET, VIRTIO_F_VERSION_1},
     bindings::virtio_ring::{VIRTIO_RING_F_EVENT_IDX, VIRTIO_RING_F_INDIRECT_DESC},
@@ -45,7 +46,7 @@ use crate::{
         GpuResponseEncodeError, VirtioGpuResult,
     },
     protocol::{
-        VirtioGpuConfig, CONTROL_QUEUE, CURSOR_QUEUE, NUM_QUEUES, QUEUE_SIZE,
+        VirtioGpuConfig, CONTROL_QUEUE, CURSOR_QUEUE, NUM_QUEUES, POLL_EVENT, QUEUE_SIZE,
         VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX, VIRTIO_GPU_MAX_SCANOUTS,
     },
     virtio_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing, VirtioShmRegion},
@@ -115,6 +116,9 @@ struct VhostUserGpuBackendInner {
 
 pub struct VhostUserGpuBackend {
     inner: Mutex<VhostUserGpuBackendInner>,
+    // this uses sync::Weak to avoid a reference cycle
+    epoll_handler: Mutex<sync::Weak<VringEpollHandler<Arc<Self>>>>,
+    poll_event_fd: Mutex<Option<EventFd>>,
 }
 
 impl VhostUserGpuBackend {
@@ -136,7 +140,16 @@ impl VhostUserGpuBackend {
 
         Ok(Arc::new(Self {
             inner: Mutex::new(inner),
+            epoll_handler: Mutex::new(sync::Weak::new()),
+            poll_event_fd: Mutex::new(None),
         }))
+    }
+
+    pub fn set_epoll_handler(&self, epoll_handlers: &[Arc<VringEpollHandler<Arc<Self>>>]) {
+        // We only expect 1 thread to which we want to register all handlers
+        assert_eq!(epoll_handlers.len(), 1);
+        let mut handler = self.epoll_handler.lock().unwrap();
+        *handler = Arc::downgrade(&epoll_handlers[0]);
     }
 }
 
@@ -477,14 +490,17 @@ impl VhostUserGpuBackendInner {
         Ok(())
     }
 
-    fn handle_queue_event(
+    fn handle_event(
         &mut self,
         device_event: u16,
         virtio_gpu: &mut RutabagaVirtioGpu,
-        vring: &VringRwLock,
+        vrings: &[VringRwLock],
     ) -> IoResult<()> {
         match device_event {
             CONTROL_QUEUE | CURSOR_QUEUE => {
+                let vring = &vrings
+                    .get(device_event as usize)
+                    .ok_or_else(|| Error::HandleEventUnknown)?;
                 if self.event_idx {
                     // vm-virtio's Queue implementation only checks avail_index
                     // once, so to properly support EVENT_IDX we need to keep
@@ -502,6 +518,10 @@ impl VhostUserGpuBackendInner {
                     self.process_queue(virtio_gpu, vring)?;
                 }
             }
+            POLL_EVENT => {
+                trace!("Handling POLL_EVENT");
+                virtio_gpu.event_poll()
+            }
             _ => {
                 warn!("unhandled device_event: {}", device_event);
                 return Err(Error::HandleEventUnknown.into());
@@ -511,13 +531,13 @@ impl VhostUserGpuBackendInner {
         Ok(())
     }
 
-    fn handle_event(
+    fn lazy_init_and_handle_event(
         &mut self,
         device_event: u16,
         evset: EventSet,
         vrings: &[VringRwLock],
         _thread_id: usize,
-    ) -> IoResult<()> {
+    ) -> IoResult<Option<EventFd>> {
         // We use thread_local here because it is the easiest way to handle VirtioGpu being !Send
         thread_local! {
             static VIRTIO_GPU_REF: RefCell<Option<RutabagaVirtioGpu>> = const { RefCell::new(None) };
@@ -527,22 +547,27 @@ impl VhostUserGpuBackendInner {
         if evset != EventSet::IN {
             return Err(Error::HandleEventNotEpollIn.into());
         };
-        let event_vring = &vrings
-            .get(device_event as usize)
-            .ok_or_else(|| Error::HandleEventUnknown)?;
+
+        let mut event_poll_fd = None;
         VIRTIO_GPU_REF.with_borrow_mut(|maybe_virtio_gpu| {
             // Lazy initializes the virtio_gpu
             let virtio_gpu = maybe_virtio_gpu.get_or_insert_with(|| {
+                // We currently pass the CONTROL_QUEUE vring to RutabagaVirtioGpu, because we only
+                // expect to process fences for that queue.
+                let control_vring = &vrings[CONTROL_QUEUE as usize];
+
                 // VirtioGpu::new can be called once per process (otherwise it panics),
                 // so if somehow another thread accidentally wants to create another gpu here,
                 // it will panic anyway
-                // We currently pass the CONTROL_QUEUE vring to RutabagaVirtioGpu, because we only
-                // expect to process fences for that queue.
-                RutabagaVirtioGpu::new(&vrings[CONTROL_QUEUE as usize])
+                let virtio_gpu = RutabagaVirtioGpu::new(control_vring);
+                event_poll_fd = virtio_gpu.get_event_poll_fd();
+                virtio_gpu
             });
-            self.handle_queue_event(device_event, virtio_gpu, event_vring)
+
+            self.handle_event(device_event, virtio_gpu, vrings)
         })?;
-        Ok(())
+
+        Ok(event_poll_fd)
     }
 
     fn get_config(&self, offset: u32, size: u32) -> Vec<u8> {
@@ -622,10 +647,25 @@ impl VhostUserBackend for VhostUserGpuBackend {
         vrings: &[Self::Vring],
         thread_id: usize,
     ) -> IoResult<()> {
-        self.inner
-            .lock()
-            .unwrap()
-            .handle_event(device_event, evset, vrings, thread_id)
+        let poll_event_fd = self.inner.lock().unwrap().lazy_init_and_handle_event(
+            device_event,
+            evset,
+            vrings,
+            thread_id,
+        )?;
+
+        if let Some(poll_event_fd) = poll_event_fd {
+            let epoll_handler = self.epoll_handler.lock().unwrap();
+            let epoll_handler = epoll_handler.upgrade().unwrap();
+            epoll_handler
+                .register_listener(poll_event_fd.as_raw_fd(), EventSet::IN, POLL_EVENT as u64)
+                .map_err(Error::RegisterEpollListener)?;
+            debug!("Registered POLL_EVENT on fd: {}", poll_event_fd.as_raw_fd());
+            // store the fd, so it is not closed after exiting this scope
+            self.poll_event_fd.lock().unwrap().replace(poll_event_fd);
+        }
+
+        Ok(())
     }
 }
 

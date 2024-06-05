@@ -52,10 +52,12 @@ fn start_backend(config: GpuConfig) -> Result<()> {
 
     let mut daemon = VhostUserDaemon::new(
         String::from("vhost-device-gpu-backend"),
-        backend,
+        backend.clone(),
         GuestMemoryAtomic::new(GuestMemoryMmap::new()),
     )
     .map_err(Error::CouldNotCreateDaemon)?;
+
+    backend.set_epoll_handler(&daemon.get_epoll_handlers());
 
     daemon.serve(socket).map_err(Error::ServeFailed)?;
     Ok(())
