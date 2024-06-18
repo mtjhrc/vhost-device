@@ -14,9 +14,9 @@ use std::{
 
 use libc::c_void;
 use rutabaga_gfx::{
-    ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaFence,
-    RutabagaFenceHandler, RutabagaIntoRawDescriptor, RutabagaIovec, RutabagaResult, Transfer3D,
-    RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_ACCESS_READ, RUTABAGA_MAP_ACCESS_RW,
+    ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaComponentType,
+    RutabagaFence, RutabagaFenceHandler, RutabagaIntoRawDescriptor, RutabagaIovec, RutabagaResult,
+    Transfer3D, RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_ACCESS_READ, RUTABAGA_MAP_ACCESS_RW,
     RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
 };
 use vhost::vhost_user::{
@@ -31,12 +31,12 @@ use virtio_bindings::virtio_gpu::VIRTIO_GPU_BLOB_MEM_HOST3D;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 use vmm_sys_util::eventfd::EventFd;
 
-use crate::device::Error;
 use crate::protocol::{
     virtio_gpu_rect, GpuResponse, GpuResponse::*, GpuResponsePlaneInfo, VirtioGpuResult,
     VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, VIRTIO_GPU_FLAG_INFO_RING_IDX,
     VIRTIO_GPU_MAX_SCANOUTS,
 };
+use crate::{device::Error, GpuMode};
 
 fn sglist_to_rutabaga_iovecs(
     vecs: &[(GuestAddress, usize)],
@@ -392,8 +392,12 @@ impl RutabagaVirtioGpu {
         })
     }
 
-    pub fn new(queue_ctl: &VringRwLock) -> Self {
-        let builder = RutabagaBuilder::new(rutabaga_gfx::RutabagaComponentType::VirglRenderer, 0)
+    pub fn new(queue_ctl: &VringRwLock, renderer: GpuMode) -> Self {
+        let component = match renderer {
+            GpuMode::ModeVirglRenderer => RutabagaComponentType::VirglRenderer,
+            GpuMode::ModeGfxstream => RutabagaComponentType::Gfxstream,
+        };
+        let builder = RutabagaBuilder::new(component, 0)
             .set_use_egl(true)
             .set_use_gles(true)
             .set_use_glx(true)

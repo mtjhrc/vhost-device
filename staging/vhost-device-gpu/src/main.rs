@@ -11,7 +11,7 @@ use clap::Parser;
 use thiserror::Error as ThisError;
 use vhost_device_gpu::{
     device::{self, VhostUserGpuBackend},
-    GpuConfig,
+    GpuConfig, GpuMode,
 };
 use vhost_user_backend::VhostUserDaemon;
 use vm_memory::{GuestMemoryAtomic, GuestMemoryMmap};
@@ -26,6 +26,8 @@ pub(crate) enum Error {
     CouldNotCreateDaemon(vhost_user_backend::Error),
     #[error("Fatal error: {0}")]
     ServeFailed(vhost_user_backend::Error),
+    #[error("Invalid Renderer Option")]
+    InvalidRenderer(serde_plain::Error),
 }
 
 #[derive(Parser, Debug)]
@@ -34,6 +36,9 @@ struct GpuArgs {
     /// vhost-user Unix domain socket.
     #[clap(short, long, value_name = "SOCKET")]
     socket_path: PathBuf,
+    /// Select the GPU mode: either 'gfxstream', 'virglrenderer', or '2d'
+    #[clap(short, long)]
+    renderer: String,
 }
 
 impl TryFrom<GpuArgs> for GpuConfig {
@@ -41,8 +46,10 @@ impl TryFrom<GpuArgs> for GpuConfig {
 
     fn try_from(args: GpuArgs) -> Result<Self> {
         let socket_path = args.socket_path;
+        let renderer: GpuMode =
+            serde_plain::from_str(&args.renderer).map_err(Error::InvalidRenderer)?;
 
-        Ok(GpuConfig::new(socket_path))
+        Ok(GpuConfig::new(socket_path, renderer))
     }
 }
 
@@ -84,6 +91,7 @@ mod tests {
         pub(crate) fn from_args(path: &Path) -> GpuArgs {
             GpuArgs {
                 socket_path: path.to_path_buf(),
+                renderer: String::from("3d"),
             }
         }
     }
