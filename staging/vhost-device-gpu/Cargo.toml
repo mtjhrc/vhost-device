@@ -22,8 +22,8 @@ rutabaga_gfx = { path = "rutabaga_gfx", features = ["gfxstream", "virgl_renderer
 serde = { version = "1", features = ["derive"] }
 serde_plain = "0.3"
 thiserror = "1.0"
-vhost = { git = "https://github.com/mtjhrc/vhost.git", package = "vhost", branch = "gpu-socket-final", features = ["vhost-user-backend"] }
-vhost-user-backend = { git = "https://github.com/mtjhrc/vhost.git", package = "vhost-user-backend", branch = "gpu-socket-final",  features = ["gpu-socket"] }
+vhost = { git = "https://github.com/mtjhrc/vhost.git", package = "vhost", branch = "gpu-and-map-support", features = ["vhost-user-backend"] }
+vhost-user-backend = { git = "https://github.com/mtjhrc/vhost.git", package = "vhost-user-backend", branch = "gpu-and-map-support",  features = ["gpu-socket"] }
 virtio-bindings = "0.2.2"
 virtio-queue = "0.12.0"
 vm-memory = "0.14.0"

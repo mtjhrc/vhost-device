@@ -98,7 +98,9 @@ impl RutabagaContext for VirglRendererContext {
             return Err(RutabagaError::InvalidCommandSize(commands.len()));
         }
         let dword_count = (commands.len() / size_of::<u32>()) as i32;
-        #[cfg(not(virgl_renderer_unstable))]
+
+        debug!("virgl component submit cmd ctx_id={}, {} fences",self.ctx_id, fence_ids.len());
+        /*#[cfg(not(virgl_renderer_unstable))]
         // SAFETY:
         // Safe because the context and buffer are valid and virglrenderer will have been
         // initialized if there are Context instances.
@@ -108,8 +110,8 @@ impl RutabagaContext for VirglRendererContext {
                 self.ctx_id as i32,
                 dword_count,
             )
-        };
-        #[cfg(virgl_renderer_unstable)]
+        };*/
+        //#[cfg(virgl_renderer_unstable)]
         // SAFETY:
         // Safe because the context and buffers are valid and virglrenderer will have been
         // initialized if there are Context instances.

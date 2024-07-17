@@ -13,14 +13,14 @@ use std::{
 };
 
 use rutabaga_gfx::{
-    ResourceCreate3D, RutabagaFence, Transfer3D, RUTABAGA_PIPE_BIND_RENDER_TARGET,
-    RUTABAGA_PIPE_TEXTURE_2D,
+    ResourceCreate3D, ResourceCreateBlob, RutabagaFence, Transfer3D,
+    RUTABAGA_PIPE_BIND_RENDER_TARGET, RUTABAGA_PIPE_TEXTURE_2D,
 };
 use thiserror::Error as ThisError;
 use vhost::vhost_user::{
     gpu_message::{VhostUserGpuCursorPos, VhostUserGpuEdidRequest},
     message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures},
-    GpuBackend,
+    Backend, GpuBackend,
 };
 use vhost_user_backend::{VhostUserBackend, VringEpollHandler, VringRwLock, VringT};
 use virtio_bindings::{
@@ -47,16 +47,15 @@ use crate::{
         virtio_gpu_get_edid, virtio_gpu_rect, virtio_gpu_resource_assign_uuid,
         virtio_gpu_resource_attach_backing, virtio_gpu_resource_create_2d,
         virtio_gpu_resource_create_3d, virtio_gpu_resource_detach_backing,
-        virtio_gpu_resource_flush, virtio_gpu_resource_map_blob, virtio_gpu_resource_unmap_blob,
-        virtio_gpu_resource_unref, virtio_gpu_set_scanout, virtio_gpu_transfer_host_3d,
-        virtio_gpu_transfer_to_host_2d, virtio_gpu_update_cursor, GpuCommand,
-        GpuCommandDecodeError,
+        virtio_gpu_resource_flush, virtio_gpu_resource_unref, virtio_gpu_set_scanout,
+        virtio_gpu_transfer_host_3d, virtio_gpu_transfer_to_host_2d, virtio_gpu_update_cursor,
+        GpuCommand, GpuCommandDecodeError,
         GpuResponse::{self, ErrUnspec},
         GpuResponseEncodeError, VirtioGpuConfig, VirtioGpuResult, CONTROL_QUEUE, CURSOR_QUEUE,
         NUM_QUEUES, POLL_EVENT, QUEUE_SIZE, VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX,
         VIRTIO_GPU_MAX_SCANOUTS,
     },
-    virtio_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing, VirtioShmRegion},
+    virtio_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing},
     GpuConfig, GpuMode,
 };
 
@@ -106,10 +105,10 @@ struct VhostUserGpuBackendInner {
     virtio_cfg: VirtioGpuConfig,
     event_idx: bool,
     gpu_backend: Option<GpuBackend>,
+    backend: Option<Backend>,
     pub exit_event: EventFd,
     mem: Option<GuestMemoryAtomic<GuestMemoryMmap>>,
     renderer: GpuMode,
-    shm_region: Option<VirtioShmRegion>,
 }
 
 pub struct VhostUserGpuBackend {
@@ -131,10 +130,10 @@ impl VhostUserGpuBackend {
             },
             event_idx: false,
             gpu_backend: None,
+            backend: None,
             exit_event: EventFd::new(EFD_NONBLOCK).map_err(|_| Error::EventFdFailed)?,
             mem: None,
             renderer: gpu_config.get_renderer(),
-            shm_region: None,
         };
 
         Ok(Arc::new(Self {
@@ -405,33 +404,37 @@ impl VhostUserGpuBackendInner {
                 fence_ids,
                 mut cmd_data,
             } => virtio_gpu.submit_command(hdr.ctx_id, &mut cmd_data, &fence_ids),
-            GpuCommand::ResourceCreateBlob(_info) => {
-                todo!()
+            GpuCommand::ResourceCreateBlob(info, iovecs) => {
+                let resource_create_blob = ResourceCreateBlob {
+                    blob_mem: info.blob_mem,
+                    blob_flags: info.blob_flags,
+                    blob_id: info.blob_id,
+                    size: info.size,
+                };
+                virtio_gpu.resource_create_blob(
+                    hdr.ctx_id,
+                    info.resource_id,
+                    resource_create_blob,
+                    iovecs,
+                    mem,
+                )
             }
-            GpuCommand::SetScanoutBlob(_info) => {
-                panic!("virtio_gpu: GpuCommand::SetScanoutBlob unimplemented");
+            GpuCommand::SetScanoutBlob(info) => {
+                warn!("TODO: GpuCommand::SetScanoutBlob");
+                virtio_gpu.set_scanout(
+                    self.gpu_backend.as_mut().unwrap(),
+                    info.scanout_id,
+                    info.resource_id,
+                    info.r.into(),
+                )
             }
-            GpuCommand::ResourceMapBlob(virtio_gpu_resource_map_blob {
-                resource_id,
-                offset,
-                ..
-            }) => {
-                if let Some(sregion) = self.shm_region.as_ref() {
-                    virtio_gpu.resource_map_blob(resource_id, sregion, offset)
-                } else {
-                    error!("{cmd:?} Failed to get GPU backend");
-                    Err(ErrUnspec)
-                }
-            }
-            GpuCommand::ResourceUnmapBlob(virtio_gpu_resource_unmap_blob {
-                resource_id, ..
-            }) => {
-                if let Some(sregion) = self.shm_region.as_ref() {
-                    virtio_gpu.resource_unmap_blob(resource_id, sregion)
-                } else {
-                    error!("{cmd:?} Failed to get GPU backend");
-                    Err(ErrUnspec)
-                }
+            GpuCommand::ResourceMapBlob(info) => virtio_gpu.resource_map_blob(
+                self.backend.as_mut().unwrap(),
+                info.resource_id,
+                info.offset,
+            ),
+            GpuCommand::ResourceUnmapBlob(info) => {
+                virtio_gpu.resource_unmap_blob(self.backend.as_mut().unwrap(), info.resource_id)
             }
         }
     }
@@ -689,13 +692,17 @@ impl VhostUserBackend for VhostUserGpuBackend {
             | 1 << VIRTIO_GPU_F_VIRGL
             | 1 << VIRTIO_GPU_F_EDID
             | 1 << VIRTIO_GPU_F_RESOURCE_BLOB
+            | 1 << VIRTIO_GPU_F_RESOURCE_BLOB
             | 1 << VIRTIO_GPU_F_CONTEXT_INIT
             | VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits()
     }
 
     fn protocol_features(&self) -> VhostUserProtocolFeatures {
-        debug!("Protocol features called");
-        VhostUserProtocolFeatures::CONFIG | VhostUserProtocolFeatures::MQ
+        VhostUserProtocolFeatures::CONFIG
+            | VhostUserProtocolFeatures::MQ
+            | VhostUserProtocolFeatures::BACKEND_REQ
+            | VhostUserProtocolFeatures::BACKEND_SEND_FD
+            | VhostUserProtocolFeatures::REPLY_ACK
     }
 
     fn set_event_idx(&self, enabled: bool) {
@@ -711,6 +718,10 @@ impl VhostUserBackend for VhostUserGpuBackend {
 
     fn set_gpu_socket(&self, backend: GpuBackend) {
         self.inner.lock().unwrap().gpu_backend = Some(backend);
+    }
+
+    fn set_backend_req_fd(&self, backend: Backend) {
+        self.inner.lock().unwrap().backend = Some(backend);
     }
 
     fn get_config(&self, offset: u32, size: u32) -> Vec<u8> {

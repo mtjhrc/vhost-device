@@ -9,6 +9,7 @@ use std::io::IoSliceMut;
 use std::io::Read;
 use std::io::Write;
 use std::sync::Arc;
+use log::debug;
 
 #[cfg(feature = "crossdomain")]
 use crate::cross_domain::CrossDomain;
@@ -893,6 +894,7 @@ impl Rutabaga {
         let component_type = self
             .capset_id_to_component_type(capset_id)
             .unwrap_or(self.default_component);
+        debug!("!!! (context_init={:x}) component_type={:?}", context_init, component_type);
 
         let component = self
             .components
@@ -1122,6 +1124,7 @@ impl RutabagaBuilder {
                 } else {
                     // Unconditionally push capset -- this should eventually be deleted when context
                     // types are always specified by crosvm launchers.
+                    debug!("Enabling capset {}", capset_id);
                     rutabaga_capsets.push(*capset);
                 }
             };

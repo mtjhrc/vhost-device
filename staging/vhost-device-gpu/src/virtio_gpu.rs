@@ -17,14 +17,16 @@ use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaComponentType,
     RutabagaFence, RutabagaFenceHandler, RutabagaIntoRawDescriptor, RutabagaIovec, RutabagaResult,
     Transfer3D, RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_ACCESS_READ, RUTABAGA_MAP_ACCESS_RW,
-    RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
+    RUTABAGA_MAP_ACCESS_WRITE, RUTABAGA_MAP_CACHE_MASK, RUTABAGA_MEM_HANDLE_TYPE_DMABUF,
+    RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
 };
+use vhost::vhost_user::message::{VhostUserBackendMapMsg, VhostUserFSBackendMsgFlags};
 use vhost::vhost_user::{
     gpu_message::{
         VhostUserGpuCursorPos, VhostUserGpuCursorUpdate, VhostUserGpuEdidRequest,
         VhostUserGpuScanout, VhostUserGpuUpdate, VirtioGpuRespDisplayInfo,
     },
-    GpuBackend,
+    Backend, GpuBackend, VhostUserFrontendReqHandler,
 };
 use vhost_user_backend::{VringRwLock, VringT};
 use virtio_bindings::virtio_gpu::VIRTIO_GPU_BLOB_MEM_HOST3D;
@@ -81,11 +83,7 @@ impl From<virtio_gpu_rect> for Rectangle {
 
 pub trait VirtioGpu {
     /// Uses the hypervisor to unmap the blob resource.
-    fn resource_unmap_blob(
-        &mut self,
-        resource_id: u32,
-        shm_region: &VirtioShmRegion,
-    ) -> VirtioGpuResult;
+    fn resource_unmap_blob(&mut self, backend: &Backend, resource_id: u32) -> VirtioGpuResult;
 
     /// Uses the hypervisor to map the rutabaga blob resource.
     ///
@@ -95,8 +93,8 @@ pub trait VirtioGpu {
     /// hypervisor process by Vulkano using metadata provided by Rutabaga::vulkan_info().
     fn resource_map_blob(
         &mut self,
+        backend: &Backend,
         resource_id: u32,
-        shm_region: &VirtioShmRegion,
         offset: u64,
     ) -> VirtioGpuResult;
 
@@ -255,13 +253,6 @@ pub trait VirtioGpu {
     fn event_poll(&self);
 }
 
-#[derive(Clone, Default)]
-pub struct VirtioShmRegion {
-    pub host_addr: u64,
-    pub guest_addr: u64,
-    pub size: usize,
-}
-
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
 pub enum VirtioGpuRing {
     Global,
@@ -338,7 +329,7 @@ const READ_RESOURCE_BYTES_PER_PIXEL: usize = 4;
 
 impl RutabagaVirtioGpu {
     // TODO: this depends on Rutabaga builder, so this will need to be handled at runtime eventually
-    pub const MAX_NUMBER_OF_CAPSETS: u32 = 3;
+    pub const MAX_NUMBER_OF_CAPSETS: u32 = 4;
 
     fn create_fence_handler(
         queue_ctl: VringRwLock,
@@ -401,7 +392,8 @@ impl RutabagaVirtioGpu {
             .set_use_egl(true)
             .set_use_gles(true)
             .set_use_glx(true)
-            .set_use_surfaceless(true)
+            .set_use_surfaceless(false)
+            .set_use_vulkan(true)
             .set_use_external_blob(true);
 
         let fence_state = Arc::new(Mutex::new(Default::default()));
@@ -814,6 +806,11 @@ impl VirtioGpu for RutabagaVirtioGpu {
         context_init: u32,
         context_name: Option<&str>,
     ) -> VirtioGpuResult {
+        debug!(
+            "Creating context {} with the name {}",
+            ctx_id,
+            context_name.unwrap_or("<unspecified>")
+        );
         self.rutabaga
             .create_context(ctx_id, context_init, context_name)?;
         Ok(OkNoData)
@@ -913,8 +910,8 @@ impl VirtioGpu for RutabagaVirtioGpu {
 
     fn resource_map_blob(
         &mut self,
+        backend: &Backend,
         resource_id: u32,
-        shm_region: &VirtioShmRegion,
         offset: u64,
     ) -> VirtioGpuResult {
         let resource = self
@@ -923,37 +920,33 @@ impl VirtioGpu for RutabagaVirtioGpu {
             .ok_or(ErrInvalidResourceId)?;
 
         let map_info = self.rutabaga.map_info(resource_id).map_err(|_| ErrUnspec)?;
-
         if let Ok(export) = self.rutabaga.export_blob(resource_id) {
             if export.handle_type != RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD {
-                let prot = match map_info & RUTABAGA_MAP_ACCESS_MASK {
-                    x if x == RUTABAGA_MAP_ACCESS_READ => libc::PROT_READ,
-                    x if x == RUTABAGA_MAP_ACCESS_WRITE => libc::PROT_WRITE,
-                    x if x == RUTABAGA_MAP_ACCESS_RW => libc::PROT_READ | libc::PROT_WRITE,
+
+                trace!(
+                    "Mapping blob resource_id={resource_id} offset={offset} resource.size={sz}",
+                    sz = resource.size
+                );
+
+                let flags = match map_info & RUTABAGA_MAP_ACCESS_MASK {
+                    RUTABAGA_MAP_ACCESS_READ => VhostUserFSBackendMsgFlags::MAP_R,
+                    RUTABAGA_MAP_ACCESS_WRITE => VhostUserFSBackendMsgFlags::MAP_W,
+                    RUTABAGA_MAP_ACCESS_RW => {
+                        VhostUserFSBackendMsgFlags::MAP_R | VhostUserFSBackendMsgFlags::MAP_W
+                    }
                     _ => return Err(ErrUnspec),
                 };
 
-                if offset + resource.size > shm_region.size as u64 {
-                    error!("mapping DOES NOT FIT");
-                }
-                let addr = shm_region.host_addr + offset;
-                debug!(
-                    "mapping: host_addr={:x}, addr={:x}, size={}",
-                    shm_region.host_addr, addr, resource.size
-                );
-                let ret = unsafe {
-                    libc::mmap(
-                        addr as *mut libc::c_void,
-                        resource.size as usize,
-                        prot,
-                        libc::MAP_SHARED | libc::MAP_FIXED,
-                        export.os_handle.as_raw_fd(),
-                        0 as libc::off_t,
-                    )
-                };
-                if ret == libc::MAP_FAILED {
-                    return Err(ErrUnspec);
-                }
+                let mut map_request = VhostUserBackendMapMsg::default();
+                map_request.shm_offset = offset;
+                map_request.len = resource.size;
+                map_request.flags = flags;
+
+                backend
+                    .mem_backend_map(&map_request, &export.os_handle.as_raw_fd())
+                    .expect("Failed to mmap by frontend");
+
+                resource.shmem_offset = Some(offset);
             } else {
                 return Err(ErrUnspec);
             }
@@ -961,40 +954,31 @@ impl VirtioGpu for RutabagaVirtioGpu {
             return Err(ErrUnspec);
         }
 
-        resource.shmem_offset = Some(offset);
         // Access flags not a part of the virtio-gpu spec.
         Ok(OkMapInfo {
             map_info: map_info & RUTABAGA_MAP_CACHE_MASK,
         })
     }
 
-    fn resource_unmap_blob(
-        &mut self,
-        resource_id: u32,
-        shm_region: &VirtioShmRegion,
-    ) -> VirtioGpuResult {
+    fn resource_unmap_blob(&mut self, backend: &Backend, resource_id: u32) -> VirtioGpuResult {
         let resource = self
             .resources
             .get_mut(&resource_id)
             .ok_or(ErrInvalidResourceId)?;
 
-        let shmem_offset = resource.shmem_offset.ok_or(ErrUnspec)?;
-
-        let addr = shm_region.host_addr + shmem_offset;
-
-        let ret = unsafe {
-            libc::mmap(
-                addr as *mut libc::c_void,
-                resource.size as usize,
-                libc::PROT_NONE,
-                libc::MAP_ANONYMOUS | libc::MAP_PRIVATE | libc::MAP_FIXED,
-                -1,
-                0_i64,
-            )
+        let Some(offset) = resource.shmem_offset else {
+            log::warn!("Guest tried to unmap blob resource with resource_id={resource_id}, but it is not mapped!");
+            return Err(ErrInvalidParameter);
         };
-        if ret == libc::MAP_FAILED {
-            panic!("UNMAP failed");
-        }
+
+        let mut unmap_request = VhostUserBackendMapMsg::default();
+        unmap_request.shm_offset = offset;
+        unmap_request.len = resource.size;
+        unmap_request.flags = VhostUserFSBackendMsgFlags::empty();
+
+        backend
+            .mem_backend_unmap(&unmap_request)
+            .expect("Failed to unmap by fronted");
 
         resource.shmem_offset = None;
 
@@ -1018,7 +1002,7 @@ impl VirtioGpu for RutabagaVirtioGpu {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use super::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuResource, VirtioGpuRing, VirtioShmRegion};
+    use super::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuResource, VirtioGpuRing};
     use rutabaga_gfx::{
         ResourceCreateBlob, RutabagaBuilder, RutabagaComponentType, RutabagaHandler,
     };
