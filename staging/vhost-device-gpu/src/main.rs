@@ -7,11 +7,11 @@
 use log::{error, info};
 use std::{path::PathBuf, process::exit};
 
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use thiserror::Error as ThisError;
 use vhost_device_gpu::{
     device::{self, VhostUserGpuBackend},
-    GpuConfig,
+    GpuConfig, GpuMode,
 };
 use vhost_user_backend::VhostUserDaemon;
 use vm_memory::{GuestMemoryAtomic, GuestMemoryMmap};
@@ -34,6 +34,23 @@ struct GpuArgs {
     /// vhost-user Unix domain socket.
     #[clap(short, long, value_name = "SOCKET")]
     socket_path: PathBuf,
+    #[clap(short, long, value_enum)]
+    renderer: RenderMode,
+}
+
+#[derive(Debug, Clone, ValueEnum)]
+enum RenderMode {
+    Gfxstream,
+    Virglrenderer,
+}
+
+impl From<RenderMode> for GpuMode {
+    fn from(mode: RenderMode) -> Self {
+        match mode {
+            RenderMode::Gfxstream => GpuMode::ModeGfxstream,
+            RenderMode::Virglrenderer => GpuMode::ModeVirglRenderer,
+        }
+    }
 }
 
 impl TryFrom<GpuArgs> for GpuConfig {
@@ -41,8 +58,9 @@ impl TryFrom<GpuArgs> for GpuConfig {
 
     fn try_from(args: GpuArgs) -> Result<Self> {
         let socket_path = args.socket_path;
+        let renderer: GpuMode = args.renderer.into();
 
-        Ok(GpuConfig::new(socket_path))
+        Ok(GpuConfig::new(socket_path, renderer))
     }
 }
 
@@ -84,6 +102,7 @@ mod tests {
         pub(crate) fn from_args(path: &Path) -> GpuArgs {
             GpuArgs {
                 socket_path: path.to_path_buf(),
+                renderer: RenderMode::Gfxstream,
             }
         }
     }

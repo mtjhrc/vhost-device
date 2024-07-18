@@ -57,7 +57,7 @@ use crate::{
         VIRTIO_GPU_MAX_SCANOUTS,
     },
     virtio_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing, VirtioShmRegion},
-    GpuConfig,
+    GpuConfig, GpuMode,
 };
 
 type Result<T> = std::result::Result<T, Error>;
@@ -108,6 +108,7 @@ struct VhostUserGpuBackendInner {
     gpu_backend: Option<GpuBackend>,
     pub exit_event: EventFd,
     mem: Option<GuestMemoryAtomic<GuestMemoryMmap>>,
+    renderer: GpuMode,
     shm_region: Option<VirtioShmRegion>,
 }
 
@@ -132,6 +133,7 @@ impl VhostUserGpuBackend {
             gpu_backend: None,
             exit_event: EventFd::new(EFD_NONBLOCK).map_err(|_| Error::EventFdFailed)?,
             mem: None,
+            renderer: gpu_config.get_renderer(),
             shm_region: None,
         };
 
@@ -638,7 +640,7 @@ impl VhostUserGpuBackendInner {
                 // VirtioGpu::new can be called once per process (otherwise it panics),
                 // so if somehow another thread accidentally wants to create another gpu here,
                 // it will panic anyway
-                let virtio_gpu = RutabagaVirtioGpu::new(control_vring);
+                let virtio_gpu = RutabagaVirtioGpu::new(control_vring, self.renderer);
                 event_poll_fd = virtio_gpu.get_event_poll_fd();
                 virtio_gpu
             });
@@ -807,7 +809,11 @@ mod tests {
         GuestMemoryAtomic<GuestMemoryMmap>,
         VringRwLock,
     ) {
-        let backend = VhostUserGpuBackend::new(GpuConfig::new(SOCKET_PATH.into())).unwrap();
+        let backend = VhostUserGpuBackend::new(GpuConfig::new(
+            SOCKET_PATH.into(),
+            GpuMode::ModeVirglRenderer,
+        ))
+        .unwrap();
         let mem = GuestMemoryAtomic::new(
             GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap(),
         );
@@ -1097,7 +1103,7 @@ mod tests {
 
     #[test]
     fn test_verify_backend() {
-        let gpu_config = GpuConfig::new(SOCKET_PATH.into());
+        let gpu_config = GpuConfig::new(SOCKET_PATH.into(), GpuMode::ModeVirglRenderer);
         let backend = VhostUserGpuBackend::new(gpu_config).unwrap();
 
         assert_eq!(backend.num_queues(), NUM_QUEUES);
