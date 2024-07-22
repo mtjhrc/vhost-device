@@ -47,16 +47,15 @@ use crate::{
         virtio_gpu_get_edid, virtio_gpu_rect, virtio_gpu_resource_assign_uuid,
         virtio_gpu_resource_attach_backing, virtio_gpu_resource_create_2d,
         virtio_gpu_resource_create_3d, virtio_gpu_resource_detach_backing,
-        virtio_gpu_resource_flush, virtio_gpu_resource_map_blob, virtio_gpu_resource_unmap_blob,
-        virtio_gpu_resource_unref, virtio_gpu_set_scanout, virtio_gpu_transfer_host_3d,
-        virtio_gpu_transfer_to_host_2d, virtio_gpu_update_cursor, GpuCommand,
-        GpuCommandDecodeError,
+        virtio_gpu_resource_flush, virtio_gpu_resource_unref, virtio_gpu_set_scanout,
+        virtio_gpu_transfer_host_3d, virtio_gpu_transfer_to_host_2d, virtio_gpu_update_cursor,
+        GpuCommand, GpuCommandDecodeError,
         GpuResponse::{self, ErrUnspec},
         GpuResponseEncodeError, VirtioGpuConfig, VirtioGpuResult, CONTROL_QUEUE, CURSOR_QUEUE,
         NUM_QUEUES, POLL_EVENT, QUEUE_SIZE, VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX,
         VIRTIO_GPU_MAX_SCANOUTS,
     },
-    virtio_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing, VirtioShmRegion},
+    virtio_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing},
     GpuConfig, GpuMode,
 };
 
@@ -109,7 +108,6 @@ struct VhostUserGpuBackendInner {
     pub exit_event: EventFd,
     mem: Option<GuestMemoryAtomic<GuestMemoryMmap>>,
     renderer: GpuMode,
-    shm_region: Option<VirtioShmRegion>,
 }
 
 pub struct VhostUserGpuBackend {
@@ -134,7 +132,6 @@ impl VhostUserGpuBackend {
             exit_event: EventFd::new(EFD_NONBLOCK).map_err(|_| Error::EventFdFailed)?,
             mem: None,
             renderer: gpu_config.get_renderer(),
-            shm_region: None,
         };
 
         Ok(Arc::new(Self {
@@ -406,32 +403,16 @@ impl VhostUserGpuBackendInner {
                 mut cmd_data,
             } => virtio_gpu.submit_command(hdr.ctx_id, &mut cmd_data, &fence_ids),
             GpuCommand::ResourceCreateBlob(_info) => {
-                todo!()
+                panic!("virtio_gpu: GpuCommand::ResourceCreateBlob unimplemented");
             }
             GpuCommand::SetScanoutBlob(_info) => {
                 panic!("virtio_gpu: GpuCommand::SetScanoutBlob unimplemented");
             }
-            GpuCommand::ResourceMapBlob(virtio_gpu_resource_map_blob {
-                resource_id,
-                offset,
-                ..
-            }) => {
-                if let Some(sregion) = self.shm_region.as_ref() {
-                    virtio_gpu.resource_map_blob(resource_id, sregion, offset)
-                } else {
-                    error!("{cmd:?} Failed to get GPU backend");
-                    Err(ErrUnspec)
-                }
+            GpuCommand::ResourceMapBlob(_info) => {
+                panic!("virtio_gpu: GpuCommand::ResourceMapBlob unimplemented");
             }
-            GpuCommand::ResourceUnmapBlob(virtio_gpu_resource_unmap_blob {
-                resource_id, ..
-            }) => {
-                if let Some(sregion) = self.shm_region.as_ref() {
-                    virtio_gpu.resource_unmap_blob(resource_id, sregion)
-                } else {
-                    error!("{cmd:?} Failed to get GPU backend");
-                    Err(ErrUnspec)
-                }
+            GpuCommand::ResourceUnmapBlob(_info) => {
+                panic!("virtio_gpu: GpuCommand::ResourceUnmapBlob unimplemented");
             }
         }
     }
