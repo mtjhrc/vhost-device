@@ -297,20 +297,23 @@ impl AssociatedScanouts {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Copy, Clone)]
 pub struct VirtioGpuResource {
-    pub size: u64,
+    id: u32,
+    width: u32,
+    height: u32,
     /// Stores information about which scanouts are associated with the given resource.
     /// Resource could be used for multiple scanouts (the displays are mirrored).
     scanouts: AssociatedScanouts,
 }
 
 impl VirtioGpuResource {
-    /// Creates a new VirtioGpuResource with the given metadata.  Width and height are used by the
-    /// display, while size is useful for hypervisor mapping.
-    pub fn new(_resource_id: u32, _width: u32, _height: u32, size: u64) -> VirtioGpuResource {
+    /// Creates a new VirtioGpuResource with 2D/3D metadata
+    pub fn new(resource_id: u32, width: u32, height: u32) -> VirtioGpuResource {
         VirtioGpuResource {
-            size,
+            id: resource_id,
+            width,
+            height,
             scanouts: Default::default(),
         }
     }
@@ -431,12 +434,11 @@ impl RutabagaVirtioGpu {
 
     fn read_2d_resource(
         &mut self,
-        resource_id: u32,
-        rect: &Rectangle,
+        resource: VirtioGpuResource,
         output: &mut [u8],
     ) -> RutabagaResult<()> {
-        let width = rect.width as usize;
-        let height = rect.height as usize;
+        let width = resource.width as usize;
+        let height = resource.height as usize;
         let bytes_per_pixel = READ_RESOURCE_BYTES_PER_PIXEL;
         let (result_len, overflowed) = width.overflowing_mul(height);
         assert!(!overflowed, "Multiplication of width and height overflowed");
@@ -449,21 +451,21 @@ impl RutabagaVirtioGpu {
         assert!(output.len() >= result_len);
 
         let transfer = Transfer3D {
-            x: rect.x,
-            y: rect.y,
+            x: 0,
+            y: 0,
             z: 0,
-            w: rect.width,
-            h: rect.height,
+            w: resource.width,
+            h: resource.height,
             d: 1,
             level: 0,
-            stride: rect.width * READ_RESOURCE_BYTES_PER_PIXEL as u32,
+            stride: resource.width * READ_RESOURCE_BYTES_PER_PIXEL as u32,
             layer_stride: 0,
             offset: 0,
         };
 
         // ctx_id 0 seems to be special, crosvm uses it for this purpose too
         self.rutabaga
-            .transfer_read(0, resource_id, transfer, Some(IoSliceMut::new(output)))?;
+            .transfer_read(0, resource.id, transfer, Some(IoSliceMut::new(output)))?;
 
         Ok(())
     }
@@ -575,7 +577,6 @@ impl VirtioGpu for RutabagaVirtioGpu {
             resource_id,
             resource_create_3d.width,
             resource_create_3d.height,
-            0,
         );
 
         debug_assert!(
@@ -599,20 +600,20 @@ impl VirtioGpu for RutabagaVirtioGpu {
         &mut self,
         resource_id: u32,
         gpu_backend: &mut GpuBackend,
-        rect: Rectangle,
+        _rect: Rectangle,
     ) -> VirtioGpuResult {
         if resource_id == 0 {
             return Ok(OkNoData);
         }
 
-        let resource = self
+        let resource = *self
             .resources
             .get(&resource_id)
             .ok_or(ErrInvalidResourceId)?;
 
         for scanout_id in resource.scanouts.iter_enabled() {
-            let width = rect.width as usize;
-            let height = rect.height as usize;
+            let width = resource.width as usize;
+            let height = resource.height as usize;
             let bytes_per_pixel = READ_RESOURCE_BYTES_PER_PIXEL;
             let (result_len, overflowed) = width.overflowing_mul(height);
             assert!(!overflowed, "Multiplication of width and height overflowed");
@@ -625,7 +626,12 @@ impl VirtioGpu for RutabagaVirtioGpu {
 
             let mut data = vec![0; result_len];
 
-            if let Err(e) = self.read_2d_resource(resource_id, &rect, &mut data) {
+            // Gfxstream doesn't support transfer_read for portion of the resource. So we always
+            // read the whole resource, even if the guest specified to flush only a portion of it.
+            //
+            // The function stream_renderer_transfer_read_iov seems to ignore the stride and
+            // transfer_box parameters and expects the provided buffer to fit the whole resource.
+            if let Err(e) = self.read_2d_resource(resource, &mut data) {
                 log::error!("Failed to read resource {resource_id} for scanout {scanout_id}: {e}");
                 continue;
             }
@@ -634,10 +640,10 @@ impl VirtioGpu for RutabagaVirtioGpu {
                 .update_scanout(
                     &VhostUserGpuUpdate {
                         scanout_id,
-                        x: rect.x,
-                        y: rect.y,
-                        width: rect.width,
-                        height: rect.height,
+                        x: 0,
+                        y: 0,
+                        width: resource.width,
+                        height: resource.height,
                     },
                     &data,
                 )
@@ -712,15 +718,24 @@ impl VirtioGpu for RutabagaVirtioGpu {
         hot_x: u32,
         hot_y: u32,
     ) -> VirtioGpuResult {
-        let mut data = Box::new([0; 4 * 64 * 64]);
-        let cursor_rect = Rectangle {
-            x: 0,
-            y: 0,
-            width: 64,
-            height: 64,
-        };
+        const CURSOR_WIDTH: u32 = 64;
+        const CURSOR_HEIGHT: u32 = 64;
 
-        self.read_2d_resource(resource_id, &cursor_rect, &mut data[..])
+        let mut data = Box::new(
+            [0; READ_RESOURCE_BYTES_PER_PIXEL * CURSOR_WIDTH as usize * CURSOR_HEIGHT as usize],
+        );
+
+        let cursor_resource = self
+            .resources
+            .get(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        if cursor_resource.width != CURSOR_WIDTH || cursor_resource.height != CURSOR_HEIGHT {
+            error!("Cursor resource has invalid dimensions");
+            return Err(ErrInvalidParameter);
+        }
+
+        self.read_2d_resource(*cursor_resource, &mut data[..])
             .map_err(|e| {
                 error!("Failed to read resource of cursor: {e}");
                 ErrUnspec

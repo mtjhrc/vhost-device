@@ -8,7 +8,7 @@ pub mod virtio_gpu;
 
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GpuMode {
     ModeVirglRenderer,
     ModeGfxstream,
