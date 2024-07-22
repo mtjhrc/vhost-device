@@ -653,13 +653,6 @@ impl VirtioGpu for RutabagaVirtioGpu {
                 })?
         }
 
-        #[cfg(windows)]
-        match self.rutabaga.resource_flush(resource_id) {
-            Ok(_) => return Ok(OkNoData),
-            Err(RutabagaError::Unsupported) => {}
-            Err(e) => return Err(ErrRutabaga(e)),
-        }
-
         Ok(OkNoData)
     }
 
