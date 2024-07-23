@@ -15,8 +15,7 @@ use std::{
 use libc::c_void;
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaComponentType,
-    RutabagaFence, RutabagaFenceHandler, RutabagaIntoRawDescriptor, RutabagaIovec, RutabagaResult,
-    Transfer3D,
+    RutabagaFence, RutabagaFenceHandler, RutabagaIntoRawDescriptor, RutabagaIovec, Transfer3D,
 };
 use vhost::vhost_user::{
     gpu_message::{
@@ -308,6 +307,20 @@ pub struct VirtioGpuResource {
 }
 
 impl VirtioGpuResource {
+    fn calculate_size(&self) -> Result<usize, &str> {
+        let width = self.width as usize;
+        let height = self.height as usize;
+        let size = width
+            .checked_mul(height)
+            .ok_or("Multiplication of width and height overflowed")?
+            .checked_mul(READ_RESOURCE_BYTES_PER_PIXEL)
+            .ok_or("Multiplication of result and bytes_per_pixel overflowed")?;
+
+        Ok(size)
+    }
+}
+
+impl VirtioGpuResource {
     /// Creates a new VirtioGpuResource with 2D/3D metadata
     pub fn new(resource_id: u32, width: u32, height: u32) -> VirtioGpuResource {
         VirtioGpuResource {
@@ -436,19 +449,9 @@ impl RutabagaVirtioGpu {
         &mut self,
         resource: VirtioGpuResource,
         output: &mut [u8],
-    ) -> RutabagaResult<()> {
-        let width = resource.width as usize;
-        let height = resource.height as usize;
-        let bytes_per_pixel = READ_RESOURCE_BYTES_PER_PIXEL;
-        let (result_len, overflowed) = width.overflowing_mul(height);
-        assert!(!overflowed, "Multiplication of width and height overflowed");
-
-        let (result_len, overflowed) = result_len.overflowing_mul(bytes_per_pixel);
-        assert!(
-            !overflowed,
-            "Multiplication of result and bytes_per_pixel overflowed"
-        );
-        assert!(output.len() >= result_len);
+    ) -> Result<(), String> {
+        let minimal_buffer_size = resource.calculate_size()?;
+        assert!(output.len() >= minimal_buffer_size);
 
         let transfer = Transfer3D {
             x: 0,
@@ -465,7 +468,8 @@ impl RutabagaVirtioGpu {
 
         // ctx_id 0 seems to be special, crosvm uses it for this purpose too
         self.rutabaga
-            .transfer_read(0, resource.id, transfer, Some(IoSliceMut::new(output)))?;
+            .transfer_read(0, resource.id, transfer, Some(IoSliceMut::new(output)))
+            .map_err(|e| format!("{e}"))?;
 
         Ok(())
     }
@@ -612,19 +616,15 @@ impl VirtioGpu for RutabagaVirtioGpu {
             .ok_or(ErrInvalidResourceId)?;
 
         for scanout_id in resource.scanouts.iter_enabled() {
-            let width = resource.width as usize;
-            let height = resource.height as usize;
-            let bytes_per_pixel = READ_RESOURCE_BYTES_PER_PIXEL;
-            let (result_len, overflowed) = width.overflowing_mul(height);
-            assert!(!overflowed, "Multiplication of width and height overflowed");
+            let resource_size = resource.calculate_size().map_err(|e| {
+                error!(
+                    "Resource {id} size calculation failed: {e}",
+                    id = resource.id
+                );
+                ErrUnspec
+            })?;
 
-            let (result_len, overflowed) = result_len.overflowing_mul(bytes_per_pixel);
-            assert!(
-                !overflowed,
-                "Multiplication of result and bytes_per_pixel overflowed"
-            );
-
-            let mut data = vec![0; result_len];
+            let mut data = vec![0; resource_size];
 
             // Gfxstream doesn't support transfer_read for portion of the resource. So we always
             // read the whole resource, even if the guest specified to flush only a portion of it.
