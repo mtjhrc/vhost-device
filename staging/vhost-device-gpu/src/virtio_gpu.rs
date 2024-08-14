@@ -75,6 +75,9 @@ impl From<virtio_gpu_rect> for Rectangle {
     }
 }
 
+#[cfg_attr(test, mockall::automock)]
+// We need to specify some lifetimes explicitly, for mockall::automock atribute to compile
+#[allow(clippy::needless_lifetimes)]
 pub trait VirtioGpu {
     /// Uses the hypervisor to unmap the blob resource.
     fn resource_unmap_blob(
@@ -177,12 +180,12 @@ pub trait VirtioGpu {
     ///    2) To the host resource's attached iovecs
     ///
     /// Can also be used to invalidate caches.
-    fn transfer_read(
+    fn transfer_read<'a>(
         &mut self,
         ctx_id: u32,
         resource_id: u32,
         transfer: Transfer3D,
-        buf: Option<VolatileSlice>,
+        buf: Option<VolatileSlice<'a>>,
     ) -> VirtioGpuResult;
 
     /// Attaches backing memory to the given resource, represented by a `Vec` of `(address, size)`
@@ -221,11 +224,11 @@ pub trait VirtioGpu {
     fn get_capset(&self, capset_id: u32, version: u32) -> VirtioGpuResult;
 
     /// Creates a rutabaga context.
-    fn create_context(
+    fn create_context<'a>(
         &mut self,
         ctx_id: u32,
         context_init: u32,
-        context_name: Option<&str>,
+        context_name: Option<&'a str>,
     ) -> VirtioGpuResult;
 
     /// Get an EventFd descriptor, that signals when to call event_poll.
