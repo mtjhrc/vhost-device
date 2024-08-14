@@ -7,6 +7,7 @@
 use log::{debug, error, trace, warn};
 use std::{
     cell::RefCell,
+    io::ErrorKind,
     io::{self, Result as IoResult},
     os::fd::AsRawFd,
     sync::{self, Arc, Mutex},
@@ -49,11 +50,9 @@ use crate::{
         virtio_gpu_resource_create_3d, virtio_gpu_resource_detach_backing,
         virtio_gpu_resource_flush, virtio_gpu_resource_unref, virtio_gpu_set_scanout,
         virtio_gpu_transfer_host_3d, virtio_gpu_transfer_to_host_2d, virtio_gpu_update_cursor,
-        GpuCommand, GpuCommandDecodeError,
-        GpuResponse::{self, ErrUnspec},
-        GpuResponseEncodeError, VirtioGpuConfig, VirtioGpuResult, CONTROL_QUEUE, CURSOR_QUEUE,
-        NUM_QUEUES, POLL_EVENT, QUEUE_SIZE, VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX,
-        VIRTIO_GPU_MAX_SCANOUTS,
+        GpuCommand, GpuCommandDecodeError, GpuResponse::ErrUnspec, GpuResponseEncodeError,
+        VirtioGpuConfig, VirtioGpuResult, CONTROL_QUEUE, CURSOR_QUEUE, NUM_QUEUES, POLL_EVENT,
+        QUEUE_SIZE, VIRTIO_GPU_FLAG_FENCE, VIRTIO_GPU_FLAG_INFO_RING_IDX, VIRTIO_GPU_MAX_SCANOUTS,
     },
     virtio_gpu::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuRing},
     GpuConfig, GpuMode,
@@ -163,34 +162,12 @@ impl VhostUserGpuBackendInner {
         virtio_gpu.force_ctx_0();
         debug!("process_gpu_command: {cmd:?}");
         match cmd {
-            GpuCommand::GetDisplayInfo => {
-                if let Some(gpu_backend) = self.gpu_backend.as_mut() {
-                    match gpu_backend.get_display_info() {
-                        Ok(display_info) => {
-                            let virtio_display = virtio_gpu.display_info(display_info);
-                            debug!("Displays: {:?}", virtio_display);
-                            Ok(GpuResponse::OkDisplayInfo(virtio_display))
-                        }
-                        Err(err) => {
-                            error!("Failed to get display info: {:?}", err);
-                            Err(ErrUnspec)
-                        }
-                    }
-                } else {
-                    error!("{cmd:?} Failed to get GPU backend");
-                    Err(ErrUnspec)
-                }
-            }
+            GpuCommand::GetDisplayInfo => virtio_gpu.display_info(),
             GpuCommand::GetEdid(virtio_gpu_get_edid { scanout, .. }) => {
                 let edid_req: VhostUserGpuEdidRequest = VhostUserGpuEdidRequest {
                     scanout_id: scanout,
                 };
-                if let Some(gpu_backend) = self.gpu_backend.as_mut() {
-                    virtio_gpu.get_edid(gpu_backend, edid_req)
-                } else {
-                    error!("{cmd:?} Failed to get GPU backend");
-                    Err(ErrUnspec)
-                }
+                virtio_gpu.get_edid(edid_req)
             }
             GpuCommand::ResourceCreate2d(virtio_gpu_resource_create_2d {
                 resource_id,
@@ -220,21 +197,9 @@ impl VhostUserGpuBackendInner {
                 r,
                 scanout_id,
                 resource_id,
-            }) => {
-                if let Some(gpu_backend) = self.gpu_backend.as_mut() {
-                    virtio_gpu.set_scanout(gpu_backend, scanout_id, resource_id, r.into())
-                } else {
-                    error!("{cmd:?} Failed to get GPU backend");
-                    Err(ErrUnspec)
-                }
-            }
+            }) => virtio_gpu.set_scanout(scanout_id, resource_id, r.into()),
             GpuCommand::ResourceFlush(virtio_gpu_resource_flush { resource_id, r, .. }) => {
-                if let Some(gpu_backend) = self.gpu_backend.as_mut() {
-                    virtio_gpu.flush_resource(resource_id, gpu_backend, r.into())
-                } else {
-                    error!("{cmd:?} Failed to get GPU backend");
-                    Err(ErrUnspec)
-                }
+                virtio_gpu.flush_resource(resource_id, r.into())
             }
             GpuCommand::TransferToHost2d(virtio_gpu_transfer_to_host_2d {
                 resource_id,
@@ -269,13 +234,8 @@ impl VhostUserGpuBackendInner {
                 hot_y,
                 ..
             }) => {
-                if let Some(gpu_backend) = self.gpu_backend.as_mut() {
-                    let cursor_pos = VhostUserGpuCursorPos { scanout_id, x, y };
-                    virtio_gpu.update_cursor(resource_id, gpu_backend, cursor_pos, hot_x, hot_y)
-                } else {
-                    error!("{cmd:?} Failed to get GPU backend");
-                    Err(ErrUnspec)
-                }
+                let cursor_pos = VhostUserGpuCursorPos { scanout_id, x, y };
+                virtio_gpu.update_cursor(resource_id, cursor_pos, hot_x, hot_y)
             }
             GpuCommand::MoveCursor(virtio_gpu_update_cursor {
                 pos:
@@ -285,13 +245,8 @@ impl VhostUserGpuBackendInner {
                 resource_id,
                 ..
             }) => {
-                if let Some(gpu_backend) = self.gpu_backend.as_mut() {
-                    let cursor = VhostUserGpuCursorPos { scanout_id, x, y };
-                    virtio_gpu.move_cursor(resource_id, gpu_backend, cursor)
-                } else {
-                    error!("{cmd:?} Failed to get GPU backend");
-                    Err(ErrUnspec)
-                }
+                let cursor = VhostUserGpuCursorPos { scanout_id, x, y };
+                virtio_gpu.move_cursor(resource_id, cursor)
             }
             GpuCommand::ResourceAssignUuid(virtio_gpu_resource_assign_uuid {
                 resource_id, ..
@@ -612,19 +567,30 @@ impl VhostUserGpuBackendInner {
 
         let mut event_poll_fd = None;
         VIRTIO_GPU_REF.with_borrow_mut(|maybe_virtio_gpu| {
-            // Lazy initializes the virtio_gpu
-            let virtio_gpu = maybe_virtio_gpu.get_or_insert_with(|| {
-                // We currently pass the CONTROL_QUEUE vring to RutabagaVirtioGpu, because we only
-                // expect to process fences for that queue.
-                let control_vring = &vrings[CONTROL_QUEUE as usize];
+            let virtio_gpu = match maybe_virtio_gpu {
+                Some(virtio_gpu) => virtio_gpu,
+                None => {
+                    let gpu_backend = self.gpu_backend.take().ok_or_else(|| {
+                        io::Error::new(
+                            ErrorKind::Other,
+                            "set_gpu_socket() not called, GpuBackend missing",
+                        )
+                    })?;
 
-                // VirtioGpu::new can be called once per process (otherwise it panics),
-                // so if somehow another thread accidentally wants to create another gpu here,
-                // it will panic anyway
-                let virtio_gpu = RutabagaVirtioGpu::new(control_vring, self.renderer);
-                event_poll_fd = virtio_gpu.get_event_poll_fd();
-                virtio_gpu
-            });
+                    // We currently pass the CONTROL_QUEUE vring to RutabagaVirtioGpu, because we only
+                    // expect to process fences for that queue.
+                    let control_vring = &vrings[CONTROL_QUEUE as usize];
+
+                    // VirtioGpu::new can be called once per process (otherwise it panics),
+                    // so if somehow another thread accidentally wants to create another gpu here,
+                    // it will panic anyway
+                    let virtio_gpu =
+                        RutabagaVirtioGpu::new(control_vring, self.renderer, gpu_backend);
+                    event_poll_fd = virtio_gpu.get_event_poll_fd();
+
+                    maybe_virtio_gpu.insert(virtio_gpu)
+                }
+            };
 
             self.handle_event(device_event, virtio_gpu, vrings)
         })?;
@@ -746,6 +712,7 @@ mod tests {
     use super::*;
     use crate::protocol::*;
     use rutabaga_gfx::{RutabagaBuilder, RutabagaComponentType, RutabagaHandler};
+    use std::os::unix::net::UnixStream;
     use std::{
         collections::BTreeMap,
         mem::size_of,
@@ -929,12 +896,20 @@ mod tests {
             .unwrap()
     }
 
+    fn gpu_backend_pair() -> (UnixStream, GpuBackend) {
+        let (frontend, backend) = UnixStream::pair().unwrap();
+        let backend = GpuBackend::from_stream(backend);
+
+        (frontend, backend)
+    }
+
     fn new_2d() -> RutabagaVirtioGpu {
         let rutabaga = RutabagaBuilder::new(RutabagaComponentType::Rutabaga2D, 0)
             .build(RutabagaHandler::new(|_| {}), None)
             .unwrap();
         RutabagaVirtioGpu {
             rutabaga,
+            gpu_backend: gpu_backend_pair().1,
             resources: BTreeMap::default(),
             fence_state: Arc::new(Mutex::new(Default::default())),
             scanouts: Default::default(),
@@ -1096,6 +1071,7 @@ mod tests {
         );
         assert_eq!(backend.queues_per_thread(), vec![0xffff_ffff]);
         assert_eq!(backend.get_config(0, 0), vec![]);
+        backend.set_gpu_socket(gpu_backend_pair().1);
 
         backend.set_event_idx(true);
         assert!(backend.inner.lock().unwrap().event_idx);

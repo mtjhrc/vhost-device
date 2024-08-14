@@ -20,7 +20,7 @@ use rutabaga_gfx::{
 use vhost::vhost_user::{
     gpu_message::{
         VhostUserGpuCursorPos, VhostUserGpuCursorUpdate, VhostUserGpuEdidRequest,
-        VhostUserGpuScanout, VhostUserGpuUpdate, VirtioGpuRespDisplayInfo,
+        VhostUserGpuScanout, VhostUserGpuUpdate,
     },
     GpuBackend,
 };
@@ -136,21 +136,16 @@ pub trait VirtioGpu {
     fn destroy_context(&mut self, ctx_id: u32) -> VirtioGpuResult;
     fn force_ctx_0(&self);
 
-    /// Gets the list of supported display resolutions as a slice of `(width, height, enabled)` tuples.
-    fn display_info(&self, display_info: VirtioGpuRespDisplayInfo) -> Vec<(u32, u32, bool)>;
+    /// Gets the list of supported display resolutions
+    fn display_info(&self) -> VirtioGpuResult;
 
     /// Gets the EDID for the specified scanout ID. If that scanout is not enabled, it would return
     /// the EDID of a default display.
-    fn get_edid(
-        &self,
-        gpu_backend: &mut GpuBackend,
-        edid_req: VhostUserGpuEdidRequest,
-    ) -> VirtioGpuResult;
+    fn get_edid(&self, edid_req: VhostUserGpuEdidRequest) -> VirtioGpuResult;
 
     /// Sets the given resource id as the source of scanout to the display.
     fn set_scanout(
         &mut self,
-        gpu_backend: &mut GpuBackend,
         scanout_id: u32,
         resource_id: u32,
         rect: Rectangle,
@@ -167,12 +162,7 @@ pub trait VirtioGpu {
     fn unref_resource(&mut self, resource_id: u32) -> VirtioGpuResult;
 
     /// If the resource is the scanout resource, flush it to the display.
-    fn flush_resource(
-        &mut self,
-        resource_id: u32,
-        gpu_backend: &mut GpuBackend,
-        rect: Rectangle,
-    ) -> VirtioGpuResult;
+    fn flush_resource(&mut self, resource_id: u32, rect: Rectangle) -> VirtioGpuResult;
 
     /// Copies data to host resource from the attached iovecs. Can also be used to flush caches.
     fn transfer_write(
@@ -213,19 +203,13 @@ pub trait VirtioGpu {
     fn update_cursor(
         &mut self,
         resource_id: u32,
-        gpu_backend: &mut GpuBackend,
         cursor_pos: VhostUserGpuCursorPos,
         hot_x: u32,
         hot_y: u32,
     ) -> VirtioGpuResult;
 
     /// Moves the cursor's position to the given coordinates.
-    fn move_cursor(
-        &mut self,
-        resource_id: u32,
-        gpu_backend: &mut GpuBackend,
-        cursor: VhostUserGpuCursorPos,
-    ) -> VirtioGpuResult;
+    fn move_cursor(&mut self, resource_id: u32, cursor: VhostUserGpuCursorPos) -> VirtioGpuResult;
 
     /// Returns a uuid for the resource.
     fn resource_assign_uuid(&self, resource_id: u32) -> VirtioGpuResult;
@@ -338,6 +322,7 @@ pub struct VirtioGpuScanout {
 
 pub struct RutabagaVirtioGpu {
     pub(crate) rutabaga: Rutabaga,
+    pub(crate) gpu_backend: GpuBackend,
     pub(crate) resources: BTreeMap<u32, VirtioGpuResource>,
     pub(crate) fence_state: Arc<Mutex<FenceState>>,
     pub(crate) scanouts: [Option<VirtioGpuScanout>; VIRTIO_GPU_MAX_SCANOUTS],
@@ -401,7 +386,7 @@ impl RutabagaVirtioGpu {
         })
     }
 
-    pub fn new(queue_ctl: &VringRwLock, renderer: GpuMode) -> Self {
+    pub fn new(queue_ctl: &VringRwLock, renderer: GpuMode, gpu_backend: GpuBackend) -> Self {
         let component = match renderer {
             GpuMode::ModeVirglRenderer => RutabagaComponentType::VirglRenderer,
             GpuMode::ModeGfxstream => RutabagaComponentType::Gfxstream,
@@ -421,6 +406,7 @@ impl RutabagaVirtioGpu {
 
         Self {
             rutabaga,
+            gpu_backend,
             resources: Default::default(),
             fence_state,
             scanouts: Default::default(),
@@ -480,21 +466,25 @@ impl VirtioGpu for RutabagaVirtioGpu {
         self.rutabaga.force_ctx_0()
     }
 
-    fn display_info(&self, display_info: VirtioGpuRespDisplayInfo) -> Vec<(u32, u32, bool)> {
-        display_info
+    fn display_info(&self) -> VirtioGpuResult {
+        let backend_display_info = self.gpu_backend.get_display_info().map_err(|e| {
+            error!("Failed to get display info: {e:?}");
+            ErrUnspec
+        })?;
+
+        let display_info = backend_display_info
             .pmodes
             .iter()
             .map(|display| (display.r.width, display.r.height, display.enabled == 1))
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+
+        debug!("Displays: {:?}", display_info);
+        Ok(OkDisplayInfo(display_info))
     }
 
-    fn get_edid(
-        &self,
-        gpu_backend: &mut GpuBackend,
-        edid_req: VhostUserGpuEdidRequest,
-    ) -> VirtioGpuResult {
+    fn get_edid(&self, edid_req: VhostUserGpuEdidRequest) -> VirtioGpuResult {
         debug!("edid request: {edid_req:?}");
-        let edid = gpu_backend.get_edid(&edid_req).map_err(|e| {
+        let edid = self.gpu_backend.get_edid(&edid_req).map_err(|e| {
             error!("Failed to get edid from frontend: {}", e);
             ErrUnspec
         })?;
@@ -506,7 +496,6 @@ impl VirtioGpu for RutabagaVirtioGpu {
 
     fn set_scanout(
         &mut self,
-        gpu_backend: &mut GpuBackend,
         scanout_id: u32,
         resource_id: u32,
         rect: Rectangle,
@@ -530,7 +519,7 @@ impl VirtioGpu for RutabagaVirtioGpu {
         if resource_id == 0 {
             *scanout = None;
             debug!("Disabling scanout scanout_id={scanout_id}");
-            gpu_backend
+            self.gpu_backend
                 .set_scanout(&VhostUserGpuScanout {
                     scanout_id,
                     width: 0,
@@ -547,7 +536,7 @@ impl VirtioGpu for RutabagaVirtioGpu {
 
         // QEMU doesn't like (it lags) when we call set_scanout while the scanout is enabled
         if scanout.is_none() {
-            gpu_backend
+            self.gpu_backend
                 .set_scanout(&VhostUserGpuScanout {
                     scanout_id,
                     width: rect.width,
@@ -600,12 +589,7 @@ impl VirtioGpu for RutabagaVirtioGpu {
     }
 
     /// If the resource is the scanout resource, flush it to the display.
-    fn flush_resource(
-        &mut self,
-        resource_id: u32,
-        gpu_backend: &mut GpuBackend,
-        _rect: Rectangle,
-    ) -> VirtioGpuResult {
+    fn flush_resource(&mut self, resource_id: u32, _rect: Rectangle) -> VirtioGpuResult {
         if resource_id == 0 {
             return Ok(OkNoData);
         }
@@ -636,7 +620,7 @@ impl VirtioGpu for RutabagaVirtioGpu {
                 continue;
             }
 
-            gpu_backend
+            self.gpu_backend
                 .update_scanout(
                     &VhostUserGpuUpdate {
                         scanout_id,
@@ -706,7 +690,6 @@ impl VirtioGpu for RutabagaVirtioGpu {
     fn update_cursor(
         &mut self,
         resource_id: u32,
-        gpu_backend: &mut GpuBackend,
         cursor_pos: VhostUserGpuCursorPos,
         hot_x: u32,
         hot_y: u32,
@@ -740,7 +723,7 @@ impl VirtioGpu for RutabagaVirtioGpu {
             hot_y,
         };
 
-        gpu_backend
+        self.gpu_backend
             .cursor_update(&cursor_update, &data)
             .map_err(|e| {
                 error!("Failed to update cursor pos from frontend: {}", e);
@@ -750,19 +733,14 @@ impl VirtioGpu for RutabagaVirtioGpu {
         Ok(OkNoData)
     }
 
-    fn move_cursor(
-        &mut self,
-        resource_id: u32,
-        gpu_backend: &mut GpuBackend,
-        cursor: VhostUserGpuCursorPos,
-    ) -> VirtioGpuResult {
+    fn move_cursor(&mut self, resource_id: u32, cursor: VhostUserGpuCursorPos) -> VirtioGpuResult {
         if resource_id == 0 {
-            gpu_backend.cursor_pos_hide(&cursor).map_err(|e| {
+            self.gpu_backend.cursor_pos_hide(&cursor).map_err(|e| {
                 error!("Failed to set cursor pos from frontend: {}", e);
                 ErrUnspec
             })?;
         } else {
-            gpu_backend.cursor_pos(&cursor).map_err(|e| {
+            self.gpu_backend.cursor_pos(&cursor).map_err(|e| {
                 error!("Failed to set cursor pos from frontend: {}", e);
                 ErrUnspec
             })?;
@@ -911,6 +889,8 @@ impl VirtioGpu for RutabagaVirtioGpu {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use std::os::unix::net::UnixStream;
     use std::sync::{Arc, Mutex};
 
     use super::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuResource, VirtioGpuRing, VirtioShmRegion};
@@ -919,12 +899,18 @@ mod tests {
     };
     use vm_memory::{GuestAddress, GuestMemoryMmap};
 
+    fn dummy_gpu_backend() -> GpuBackend {
+        let (_, backend) = UnixStream::pair().unwrap();
+        GpuBackend::from_stream(backend)
+    }
+
     fn new_2d() -> RutabagaVirtioGpu {
         let rutabaga = RutabagaBuilder::new(RutabagaComponentType::Rutabaga2D, 0)
             .build(RutabagaHandler::new(|_| {}), None)
             .unwrap();
         RutabagaVirtioGpu {
             rutabaga,
+            gpu_backend: dummy_gpu_backend(),
             resources: Default::default(),
             fence_state: Arc::new(Mutex::new(Default::default())),
             scanouts: Default::default(),
