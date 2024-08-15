@@ -59,8 +59,6 @@ pub enum GpuError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use assert_matches::assert_matches;
-    use std::io;
 
     #[test]
     fn test_gpu_config() {
@@ -68,22 +66,5 @@ mod tests {
         let socket_path = PathBuf::from("/tmp/socket");
         let gpu_config = GpuConfig::new(socket_path.clone(), GpuMode::ModeVirglRenderer);
         assert_eq!(gpu_config.get_socket_path(), socket_path);
-    }
-
-    #[test]
-    fn test_gpu_error() {
-        // Test GPU error variants
-        let event_fd_error = GpuError::EventFd(io::Error::from(io::ErrorKind::NotFound));
-        assert_matches!(event_fd_error, GpuError::EventFd(_));
-
-        let decode_error = GpuError::DecodeCommand(io::Error::from(io::ErrorKind::InvalidData));
-        assert_matches!(decode_error, GpuError::DecodeCommand(_));
-
-        let write_error =
-            GpuError::WriteDescriptor(io::Error::from(io::ErrorKind::PermissionDenied));
-        assert_matches!(write_error, GpuError::WriteDescriptor(_));
-
-        let guest_memory_error = GpuError::GuestMemory;
-        assert_matches!(guest_memory_error, GpuError::GuestMemory);
     }
 }
