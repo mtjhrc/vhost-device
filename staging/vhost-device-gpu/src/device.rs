@@ -712,6 +712,7 @@ mod tests {
     use crate::protocol::GpuResponse::{OkCapsetInfo, OkDisplayInfo, OkEdid, OkNoData};
     use crate::virtio_gpu::MockVirtioGpu;
     use mockall::predicate;
+    use rusty_fork::rusty_fork_test;
 
     use crate::protocol::{
         VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
@@ -1326,6 +1327,7 @@ mod tests {
         );
     }
 
+    rusty_fork_test! {
     #[test]
     fn test_verify_backend() {
         let gpu_config = GpuConfig::new(SOCKET_PATH.into(), GpuMode::ModeVirglRenderer);
@@ -1381,5 +1383,6 @@ mod tests {
         // Hit the non-loop part
         backend.set_event_idx(false);
         backend.handle_event(0, EventSet::IN, &[vring], 0).unwrap();
+    }
     }
 }
