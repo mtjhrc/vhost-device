@@ -714,7 +714,8 @@ mod tests {
     use mockall::predicate;
 
     use crate::protocol::{
-        VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM,
+        VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
+        VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D, VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM,
         VIRTIO_GPU_RESP_ERR_UNSPEC, VIRTIO_GPU_RESP_OK_NODATA,
     };
     use assert_matches::assert_matches;
@@ -1163,6 +1164,166 @@ mod tests {
 
         let result_hdr2: virtio_gpu_ctrl_hdr = mem.memory().read_obj(outputs[1][0]).unwrap();
         assert_eq!(result_hdr2, expected_hdr2);
+    }
+
+    #[test]
+    fn test_command_with_fence_ready_immediately() {
+        let (backend, mem) = init();
+        backend.update_memory(mem.clone()).unwrap();
+        let mut backend_inner = backend.inner.lock().unwrap();
+
+        const FENCE_ID: u64 = 123;
+
+        let hdr = virtio_gpu_ctrl_hdr {
+            type_: VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D,
+            flags: VIRTIO_GPU_FLAG_FENCE,
+            fence_id: FENCE_ID,
+            ctx_id: 0,
+            ring_idx: 0,
+            padding: Default::default(),
+        };
+
+        let cmd = virtio_gpu_transfer_host_3d::default();
+
+        let chain = TestingDescChainArgs {
+            readable_desc_bufs: &[hdr.as_slice(), cmd.as_slice()],
+            writable_desc_lengths: &[mem::size_of::<virtio_gpu_ctrl_hdr>() as u32],
+        };
+
+        let (control_vring, outputs, control_signal_used_queue_evt) =
+            create_control_vring(&mem, &[chain]);
+        let (cursor_vring, _, _) = create_cursor_vring(&mem, &[]);
+
+        let mut mock_gpu = MockVirtioGpu::new();
+        let seq = &mut mockall::Sequence::new();
+
+        mock_gpu
+            .expect_force_ctx_0()
+            .return_const(())
+            .once()
+            .in_sequence(seq);
+
+        mock_gpu
+            .expect_transfer_write()
+            .returning(|_, _, _| Ok(OkNoData))
+            .once()
+            .in_sequence(seq);
+
+        mock_gpu
+            .expect_create_fence()
+            .withf(|fence| fence.fence_id == FENCE_ID)
+            .returning(|_| Ok(OkNoData))
+            .once()
+            .in_sequence(seq);
+
+        mock_gpu
+            .expect_process_fence()
+            .with(
+                predicate::eq(VirtioGpuRing::Global),
+                predicate::eq(FENCE_ID),
+                predicate::eq(0),
+                predicate::eq(mem::size_of_val(&hdr) as u32),
+            )
+            .return_const(true)
+            .once()
+            .in_sequence(seq);
+
+        backend_inner
+            .handle_event(0, &mut mock_gpu, &[control_vring.clone(), cursor_vring])
+            .unwrap();
+
+        let expected_hdr = virtio_gpu_ctrl_hdr {
+            type_: VIRTIO_GPU_RESP_OK_NODATA,
+            flags: VIRTIO_GPU_FLAG_FENCE,
+            fence_id: FENCE_ID,
+            ctx_id: 0,
+            ring_idx: 0,
+            padding: Default::default(),
+        };
+
+        control_signal_used_queue_evt
+            .read()
+            .expect("Expected device to call signal_used_queue!");
+
+        let result_hdr1: virtio_gpu_ctrl_hdr = mem.memory().read_obj(outputs[0][0]).unwrap();
+        assert_eq!(result_hdr1, expected_hdr);
+    }
+
+    #[test]
+    fn test_command_with_fence_not_ready() {
+        let (backend, mem) = init();
+        backend.update_memory(mem.clone()).unwrap();
+        let mut backend_inner = backend.inner.lock().unwrap();
+
+        const FENCE_ID: u64 = 123;
+        const CTX_ID: u32 = 1;
+        const RING_IDX: u8 = 2;
+
+        let hdr = virtio_gpu_ctrl_hdr {
+            type_: VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
+            flags: VIRTIO_GPU_FLAG_FENCE | VIRTIO_GPU_FLAG_INFO_RING_IDX,
+            fence_id: FENCE_ID,
+            ctx_id: CTX_ID,
+            ring_idx: RING_IDX,
+            padding: Default::default(),
+        };
+
+        let cmd = virtio_gpu_transfer_host_3d::default();
+
+        let chain = TestingDescChainArgs {
+            readable_desc_bufs: &[hdr.as_slice(), cmd.as_slice()],
+            writable_desc_lengths: &[mem::size_of::<virtio_gpu_ctrl_hdr>() as u32],
+        };
+
+        let (control_vring, _, control_signal_used_queue_evt) =
+            create_control_vring(&mem, &[chain]);
+        let (cursor_vring, _, _) = create_cursor_vring(&mem, &[]);
+
+        let mut mock_gpu = MockVirtioGpu::new();
+        let seq = &mut mockall::Sequence::new();
+
+        mock_gpu
+            .expect_force_ctx_0()
+            .return_const(())
+            .once()
+            .in_sequence(seq);
+
+        mock_gpu
+            .expect_transfer_read()
+            .returning(|_, _, _, _| Ok(OkNoData))
+            .once()
+            .in_sequence(seq);
+
+        mock_gpu
+            .expect_create_fence()
+            .withf(|fence| fence.fence_id == FENCE_ID)
+            .returning(|_| Ok(OkNoData))
+            .once()
+            .in_sequence(seq);
+
+        mock_gpu
+            .expect_process_fence()
+            .with(
+                predicate::eq(VirtioGpuRing::ContextSpecific {
+                    ctx_id: CTX_ID,
+                    ring_idx: RING_IDX,
+                }),
+                predicate::eq(FENCE_ID),
+                predicate::eq(0),
+                predicate::eq(mem::size_of_val(&hdr) as u32),
+            )
+            .return_const(false)
+            .once()
+            .in_sequence(seq);
+
+        backend_inner
+            .handle_event(0, &mut mock_gpu, &[control_vring.clone(), cursor_vring])
+            .unwrap();
+
+        assert_eq!(
+            control_signal_used_queue_evt.read().unwrap_err().kind(),
+            ErrorKind::WouldBlock
+        );
     }
 
     #[test]
