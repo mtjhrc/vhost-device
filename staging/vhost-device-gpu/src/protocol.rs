@@ -1333,7 +1333,7 @@ mod tests {
     }
 
     #[test]
-    fn test_gpu_command_encode() {
+    fn test_gpu_response_encode() {
         let mem = GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 16384)]).unwrap();
 
         let vq = MockSplitQueue::new(&mem, 8);
