@@ -1092,8 +1092,11 @@ impl GpuResponse {
 
 #[cfg(test)]
 mod tests {
-
     use super::*;
+    use virtio_bindings::virtio_ring::VRING_DESC_F_WRITE;
+    use virtio_queue::mock::MockSplitQueue;
+    use virtio_queue::Descriptor;
+    use vm_memory::GuestMemoryMmap;
 
     #[test]
     fn test_virtio_gpu_config() {
@@ -1327,5 +1330,61 @@ mod tests {
             debug_string,
             "\"virtio_gpu_ctx_create\" { debug_name: \"test_debug\", context_init: 0 }"
         );
+    }
+
+    #[test]
+    fn test_gpu_command_encode() {
+        let mem = GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 16384)]).unwrap();
+
+        let vq = MockSplitQueue::new(&mem, 8);
+        let desc_chain = vq
+            .build_desc_chain(&[Descriptor::new(0x1000, 8192, VRING_DESC_F_WRITE as u16, 0)])
+            .unwrap();
+
+        let mut writer = desc_chain
+            .clone()
+            .writer(&mem)
+            .map_err(Error::CreateWriter)
+            .unwrap();
+
+        let resp = GpuResponse::OkNoData;
+        let resp_ok_nodata = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_ok_nodata, 24);
+
+        let resp = GpuResponse::OkDisplayInfo(vec![(0, 0, false)]);
+        let resp_display_info = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_display_info, 408);
+
+        let edid_data: Box<[u8]> = Box::new([0u8; 1024]);
+        let resp = GpuResponse::OkEdid { blob: edid_data };
+        let resp_edid = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_edid, 1056);
+
+        let resp = GpuResponse::OkCapset(vec![]);
+        let resp_capset = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_capset, 24);
+
+        let resp = GpuResponse::OkCapsetInfo {
+            capset_id: 0,
+            version: 0,
+            size: 0,
+        };
+        let resp_capset = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_capset, 40);
+
+        let resp = GpuResponse::OkResourcePlaneInfo {
+            format_modifier: 0,
+            plane_info: vec![],
+        };
+        let resp_resource_planeinfo = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_resource_planeinfo, 72);
+
+        let resp = GpuResponse::OkResourceUuid { uuid: [0u8; 16] };
+        let resp_resource_uuid = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_resource_uuid, 40);
+
+        let resp = GpuResponse::OkMapInfo { map_info: 0 };
+        let resp_map_info = GpuResponse::encode(&resp, 0, 0, 0, 0, &mut writer).unwrap();
+        assert_eq!(resp_map_info, 32);
     }
 }
