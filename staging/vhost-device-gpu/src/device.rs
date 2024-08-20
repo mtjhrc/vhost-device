@@ -709,26 +709,31 @@ impl VhostUserBackend for VhostUserGpuBackend {
 mod tests {
     use super::*;
 
-    use crate::protocol::GpuResponse::{OkCapsetInfo, OkDisplayInfo, OkEdid, OkNoData};
-    use crate::virtio_gpu::MockVirtioGpu;
-    use mockall::predicate;
-    use rusty_fork::rusty_fork_test;
-
     use crate::protocol::{
-        VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
+        virtio_gpu_mem_entry,
+        GpuResponse::{OkCapsetInfo, OkDisplayInfo, OkEdid, OkNoData},
+        VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, VIRTIO_GPU_CMD_RESOURCE_CREATE_2D,
+        VIRTIO_GPU_CMD_RESOURCE_FLUSH, VIRTIO_GPU_CMD_SET_SCANOUT,
+        VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D,
         VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D, VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM,
         VIRTIO_GPU_RESP_ERR_UNSPEC, VIRTIO_GPU_RESP_OK_NODATA,
     };
+    use crate::virtio_gpu::MockVirtioGpu;
     use assert_matches::assert_matches;
+    use mockall::predicate;
+    use rusty_fork::rusty_fork_test;
     use std::{
         fs::File,
-        io::ErrorKind,
+        io::{ErrorKind, Read},
         iter::zip,
         mem,
         os::{fd::FromRawFd, unix::net::UnixStream},
         sync::Arc,
+        thread,
+        time::Duration,
     };
-    use vhost_user_backend::{VringRwLock, VringT};
+    use vhost::vhost_user::gpu_message::{VhostUserGpuScanout, VhostUserGpuUpdate};
+    use vhost_user_backend::{VhostUserDaemon, VringRwLock, VringT};
     use virtio_bindings::virtio_ring::{VRING_DESC_F_NEXT, VRING_DESC_F_WRITE};
     use virtio_queue::{mock::MockSplitQueue, Descriptor, Queue, QueueT};
     use vm_memory::{
@@ -1383,6 +1388,241 @@ mod tests {
         // Hit the non-loop part
         backend.set_event_idx(false);
         backend.handle_event(0, EventSet::IN, &[vring], 0).unwrap();
+    }
+    }
+
+    mod test_image {
+        use super::*;
+        const GREEN_PIXEL: u32 = 0x00FF00FF;
+        const RED_PIXEL: u32 = 0xFF0000FF;
+        const BYTES_PER_PIXEL: usize = 4;
+
+        pub fn write(mem: &GuestMemoryMmap, image_addr: GuestAddress, width: u32, height: u32) {
+            let mut image_addr: u64 = image_addr.0;
+            for i in 0..width * height {
+                let pixel = if i % 2 == 0 { RED_PIXEL } else { GREEN_PIXEL };
+                let pixel = pixel.to_be_bytes();
+
+                mem.memory()
+                    .write_slice(&pixel, GuestAddress(image_addr))
+                    .unwrap();
+                image_addr += BYTES_PER_PIXEL as u64;
+            }
+        }
+
+        pub fn assert(data: &[u8], width: u32, height: u32) {
+            assert_eq!(data.len(), (width * height) as usize * BYTES_PER_PIXEL);
+            for (i, pixel) in data.chunks(BYTES_PER_PIXEL).enumerate() {
+                let expected_pixel = if i % 2 == 0 { RED_PIXEL } else { GREEN_PIXEL };
+                assert_eq!(
+                    pixel,
+                    expected_pixel.to_be_bytes(),
+                    "Wrong pixel at index {i}"
+                );
+            }
+        }
+    }
+
+    fn split_into_mem_entries(
+        addr: GuestAddress,
+        len: u32,
+        chunk_size: u32,
+    ) -> Vec<virtio_gpu_mem_entry> {
+        let mut entries = Vec::new();
+        let mut addr = addr.0;
+        let mut remaining = len;
+
+        while remaining >= chunk_size {
+            entries.push(virtio_gpu_mem_entry {
+                addr,
+                length: chunk_size,
+                padding: Default::default(),
+            });
+            addr += chunk_size as u64;
+            remaining -= chunk_size;
+        }
+
+        if remaining != 0 {
+            entries.push(virtio_gpu_mem_entry {
+                addr,
+                length: remaining,
+                padding: Default::default(),
+            })
+        }
+
+        entries
+    }
+
+    fn new_hdr(type_: u32) -> virtio_gpu_ctrl_hdr {
+        virtio_gpu_ctrl_hdr {
+            type_,
+            ..Default::default()
+        }
+    }
+
+    rusty_fork_test! {
+    /// This test uses multiple gpu commands, it crates a resource, writes a test image into it and
+    /// then present the display output.
+    #[test]
+    fn test_display_output() {
+        let (backend, mem) = init();
+        let (mut gpu_frontend, gpu_backend) = gpu_backend_pair();
+        gpu_frontend
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+        gpu_frontend
+            .set_write_timeout(Some(Duration::from_secs(10)))
+            .unwrap();
+
+        backend.set_gpu_socket(gpu_backend);
+
+        // Unfortunately there is no way to crate a VringEpollHandler directly (the ::new is not public)
+        // So we create a daemon to create the epoll handler for us here
+        let daemon = VhostUserDaemon::new(
+            "vhost-device-gpu-backend".to_string(),
+            backend.clone(),
+            mem.clone(),
+        )
+        .expect("Could not create daemon");
+        let epoll_handlers = daemon.get_epoll_handlers();
+        backend.set_epoll_handler(&epoll_handlers);
+        mem::drop(daemon);
+
+        const IMAGE_ADDR: GuestAddress = GuestAddress(0x30_000);
+        const IMAGE_WIDTH: u32 = 640;
+        const IMAGE_HEIGHT: u32 = 480;
+        const RESP_SIZE: u32 = mem::size_of::<virtio_gpu_ctrl_hdr>() as u32;
+
+        let image_rect = virtio_gpu_rect {
+            x: 0,
+            y: 0,
+            width: IMAGE_WIDTH,
+            height: IMAGE_HEIGHT,
+        };
+
+        // Construct a command to create a resource
+        let hdr = new_hdr(VIRTIO_GPU_CMD_RESOURCE_CREATE_2D);
+        let cmd = virtio_gpu_resource_create_2d {
+            resource_id: 1,
+            format: VIRTIO_GPU_FORMAT_R8G8B8A8_UNORM, // RGBA8888
+            width: IMAGE_WIDTH,
+            height: IMAGE_HEIGHT,
+        };
+        let create_resource_cmd = TestingDescChainArgs {
+            readable_desc_bufs: &[hdr.as_slice(), cmd.as_slice()],
+            writable_desc_lengths: &[RESP_SIZE],
+        };
+
+        // Construct a command to attach backing memory location(s) to the resource
+        let hdr = new_hdr(VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING);
+        let mem_entries = split_into_mem_entries(IMAGE_ADDR, IMAGE_WIDTH * IMAGE_HEIGHT * 4, 4096);
+        let cmd = virtio_gpu_resource_attach_backing {
+            resource_id: 1,
+            nr_entries: mem_entries.len() as u32,
+        };
+        let mut readable_desc_bufs = vec![hdr.as_slice(), cmd.as_slice()];
+        readable_desc_bufs.extend(mem_entries.iter().map(|entry| entry.as_slice()));
+        let attach_backing_cmd = TestingDescChainArgs {
+            readable_desc_bufs: &readable_desc_bufs,
+            writable_desc_lengths: &[RESP_SIZE],
+        };
+
+        // Construct a command to transfer the resource data from the attached memory to gpu
+        let hdr = new_hdr(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D);
+        let cmd = virtio_gpu_transfer_to_host_2d {
+            r: image_rect,
+            offset: 0,
+            resource_id: 1,
+            padding: Default::default(),
+        };
+        let transfer_to_host_cmd = TestingDescChainArgs {
+            readable_desc_bufs: &[hdr.as_slice(), cmd.as_slice()],
+            writable_desc_lengths: &[RESP_SIZE],
+        };
+
+        // Construct a command to set the scanout (display) output
+        let hdr = new_hdr(VIRTIO_GPU_CMD_SET_SCANOUT);
+        let cmd = virtio_gpu_set_scanout {
+            r: image_rect,
+            resource_id: 1,
+            scanout_id: 1,
+        };
+        let set_scanout_cmd = TestingDescChainArgs {
+            readable_desc_bufs: &[hdr.as_slice(), cmd.as_slice()],
+            writable_desc_lengths: &[RESP_SIZE],
+        };
+
+        // Construct a command to flush the resource
+        let hdr = new_hdr(VIRTIO_GPU_CMD_RESOURCE_FLUSH);
+        let cmd = virtio_gpu_resource_flush {
+            r: image_rect,
+            resource_id: 1,
+            padding: Default::default(),
+        };
+        let flush_resource_cmd = TestingDescChainArgs {
+            readable_desc_bufs: &[hdr.as_slice(), cmd.as_slice()],
+            writable_desc_lengths: &[RESP_SIZE],
+        };
+
+        // Create a control queue with all the commands defined above
+        let commands = [
+            create_resource_cmd,
+            attach_backing_cmd,
+            transfer_to_host_cmd,
+            set_scanout_cmd,
+            flush_resource_cmd,
+        ];
+        let (control_vring, _, _) = create_control_vring(&mem, &commands);
+
+        // Create an empty cursor queue with no commands
+        let (cursor_vring, _, _) = create_cursor_vring(&mem, &[]);
+
+        // Write the test image in guest memory
+        test_image::write(&mem.memory(), IMAGE_ADDR, IMAGE_WIDTH, IMAGE_HEIGHT);
+
+        const EXPECTED_SCANOUT_REQUEST: VhostUserGpuScanout = VhostUserGpuScanout {
+            scanout_id: 1,
+            width: IMAGE_WIDTH,
+            height: IMAGE_HEIGHT,
+        };
+
+        const EXPECTED_UPDATE_REQUEST: VhostUserGpuUpdate = VhostUserGpuUpdate {
+            scanout_id: 1,
+            x: 0,
+            y: 0,
+            width: IMAGE_WIDTH,
+            height: IMAGE_HEIGHT,
+        };
+
+        // This simulates the frontend vmm. Here we check the issued frontend requests and if the
+        // output matches the test image.
+        let frontend_thread = thread::spawn(move || {
+            let mut scanout_request_hdr = [0; 12];
+            let mut scanout_request = VhostUserGpuScanout::default();
+            let mut update_request_hdr = [0; 12];
+            let mut update_request = VhostUserGpuUpdate::default();
+            let mut result_img = vec![0xdd; (IMAGE_WIDTH * IMAGE_HEIGHT * 4) as usize];
+
+            gpu_frontend.read_exact(&mut scanout_request_hdr).unwrap();
+            gpu_frontend
+                .read_exact(scanout_request.as_mut_slice())
+                .unwrap();
+            gpu_frontend.read_exact(&mut update_request_hdr).unwrap();
+            gpu_frontend
+                .read_exact(update_request.as_mut_slice())
+                .unwrap();
+            gpu_frontend.read_exact(&mut result_img).unwrap();
+
+            assert_eq!(scanout_request, EXPECTED_SCANOUT_REQUEST);
+            assert_eq!(update_request, EXPECTED_UPDATE_REQUEST);
+            test_image::assert(&result_img, IMAGE_WIDTH, IMAGE_HEIGHT);
+        });
+
+        backend
+            .handle_event(0, EventSet::IN, &[control_vring, cursor_vring], 0)
+            .unwrap();
+
+        frontend_thread.join().unwrap();
     }
     }
 }
