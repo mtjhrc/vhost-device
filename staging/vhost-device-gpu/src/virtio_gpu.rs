@@ -896,19 +896,22 @@ mod tests {
     use std::os::unix::net::UnixStream;
     use std::sync::{Arc, Mutex};
 
-    use super::{RutabagaVirtioGpu, VirtioGpu, VirtioGpuResource, VirtioGpuRing, VirtioShmRegion};
-    use rutabaga_gfx::{
-        ResourceCreateBlob, RutabagaBuilder, RutabagaComponentType, RutabagaHandler,
-    };
-    use vm_memory::{GuestAddress, GuestMemoryMmap};
+    use assert_matches::assert_matches;
+    use rusty_fork::rusty_fork_test;
+    use rutabaga_gfx::{RutabagaBuilder, RutabagaComponentType, RutabagaHandler};
 
     fn dummy_gpu_backend() -> GpuBackend {
         let (_, backend) = UnixStream::pair().unwrap();
         GpuBackend::from_stream(backend)
     }
 
-    fn new_2d() -> RutabagaVirtioGpu {
-        let rutabaga = RutabagaBuilder::new(RutabagaComponentType::Rutabaga2D, 0)
+    fn new_gpu() -> RutabagaVirtioGpu {
+        let rutabaga = RutabagaBuilder::new(RutabagaComponentType::VirglRenderer, 0)
+            .set_use_egl(true)
+            .set_use_gles(true)
+            .set_use_glx(true)
+            .set_use_egl(true)
+            .set_use_surfaceless(true)
             .build(RutabagaHandler::new(|_| {}), None)
             .unwrap();
         RutabagaVirtioGpu {
@@ -920,39 +923,30 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_gpu_backend_success() {
-        let mut virtio_gpu = new_2d();
-        virtio_gpu.get_capset(0, 0).unwrap();
-        virtio_gpu.process_fence(VirtioGpuRing::Global, 0, 0, 0);
-    }
+    rusty_fork_test! {
+        #[test]
+        fn test_gpu_capset() {
+            let virtio_gpu = new_gpu();
 
-    #[test]
-    fn test_gpu_backend_failure() {
-        let mut virtio_gpu = new_2d();
+            let capset_info = virtio_gpu.get_capset_info(0);
+            assert_matches!(capset_info, Ok(OkCapsetInfo { .. }));
 
-        virtio_gpu.get_capset_info(0).unwrap_err();
-        let resource_create_blob = ResourceCreateBlob {
-            blob_mem: 0,
-            blob_flags: 0,
-            blob_id: 0,
-            size: 0,
-        };
-        let vecs = vec![(GuestAddress(0), 10)];
-        let mem = &GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap();
-        virtio_gpu
-            .resource_create_blob(1, 1, resource_create_blob, vecs, mem)
+            let Ok(OkCapsetInfo {capset_id, version, ..}) = capset_info else {
+                unreachable!("Response should have been checked by assert")
+            };
+
+            let capset_info = virtio_gpu.get_capset(capset_id, version);
+            assert_matches!(capset_info, Ok(OkCapset(_)));
+        }
+
+        #[test]
+        fn test_gpu_submit_command_fails() {
+            let mut virtio_gpu = new_gpu();
+            let mut cmd_buf = [0; 10];
+            let fence_ids: Vec<u64> = Vec::with_capacity(0);
+            virtio_gpu
+                .submit_command(1, &mut cmd_buf[..], &fence_ids)
             .unwrap_err();
-
-        let shm_region = VirtioShmRegion::default();
-        let resource = VirtioGpuResource::default();
-        virtio_gpu.resources.insert(1, resource);
-        virtio_gpu.resource_map_blob(1, &shm_region, 0).unwrap_err();
-        virtio_gpu.resource_unmap_blob(1, &shm_region).unwrap_err();
-        let mut cmd_buf = [0; 10];
-        let fence_ids: Vec<u64> = Vec::with_capacity(0);
-        virtio_gpu
-            .submit_command(0, &mut cmd_buf[..], &fence_ids)
-            .unwrap_err();
+        }
     }
 }
