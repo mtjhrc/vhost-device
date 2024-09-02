@@ -13,25 +13,18 @@ use std::{
 };
 
 use libc::c_void;
-use rutabaga_gfx::{
-    ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaComponentType,
-    RutabagaFence, RutabagaFenceHandler, RutabagaIntoRawDescriptor, RutabagaIovec, Transfer3D,
-};
-use vhost::vhost_user::{
-    gpu_message::{
-        VhostUserGpuCursorPos, VhostUserGpuCursorUpdate, VhostUserGpuEdidRequest,
-        VhostUserGpuScanout, VhostUserGpuUpdate,
-    },
-    GpuBackend,
-};
+use rutabaga_gfx::{ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaComponentType, RutabagaFence, RutabagaFenceHandler, RutabagaIntoRawDescriptor, RutabagaIovec, Transfer3D, RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_CACHE_MASK, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD};
+use vhost::vhost_user::{gpu_message::{
+    VhostUserGpuCursorPos, VhostUserGpuCursorUpdate, VhostUserGpuEdidRequest,
+    VhostUserGpuScanout, VhostUserGpuUpdate,
+}, Backend, GpuBackend, VhostUserFrontendReqHandler};
+use vhost::vhost_user::message::{VhostUserMMap, VhostUserMMapFlags};
 use vhost_user_backend::{VringRwLock, VringT};
+use virtio_bindings::virtio_gpu::VIRTIO_GPU_BLOB_MEM_HOST3D;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 use vmm_sys_util::eventfd::EventFd;
 
-use crate::protocol::{
-    virtio_gpu_rect, GpuResponse, GpuResponse::*, GpuResponsePlaneInfo, VirtioGpuResult,
-    VIRTIO_GPU_FLAG_INFO_RING_IDX, VIRTIO_GPU_MAX_SCANOUTS,
-};
+use crate::protocol::{virtio_gpu_rect, GpuResponse, GpuResponse::*, GpuResponsePlaneInfo, VirtioGpuResult, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, VIRTIO_GPU_FLAG_INFO_RING_IDX, VIRTIO_GPU_MAX_SCANOUTS};
 use crate::{device::Error, GpuMode};
 
 fn sglist_to_rutabaga_iovecs(
@@ -83,7 +76,6 @@ pub trait VirtioGpu {
     fn resource_unmap_blob(
         &mut self,
         resource_id: u32,
-        shm_region: &VirtioShmRegion,
     ) -> VirtioGpuResult;
 
     /// Uses the hypervisor to map the rutabaga blob resource.
@@ -95,7 +87,6 @@ pub trait VirtioGpu {
     fn resource_map_blob(
         &mut self,
         resource_id: u32,
-        shm_region: &VirtioShmRegion,
         offset: u64,
     ) -> VirtioGpuResult;
 
@@ -283,11 +274,13 @@ impl AssociatedScanouts {
     }
 }
 
-#[derive(Default, Copy, Clone)]
+#[derive(Copy, Clone)]
 pub struct VirtioGpuResource {
     id: u32,
     width: u32,
     height: u32,
+    blob_size: u64,
+    blob_shmem_offset: Option<u64>,
     /// Stores information about which scanouts are associated with the given resource.
     /// Resource could be used for multiple scanouts (the displays are mirrored).
     scanouts: AssociatedScanouts,
@@ -309,11 +302,25 @@ impl VirtioGpuResource {
 
 impl VirtioGpuResource {
     /// Creates a new VirtioGpuResource with 2D/3D metadata
-    pub fn new(resource_id: u32, width: u32, height: u32) -> VirtioGpuResource {
+    pub fn new_3d(resource_id: u32, width: u32, height: u32) -> VirtioGpuResource {
         VirtioGpuResource {
             id: resource_id,
             width,
             height,
+            blob_size: 0,
+            blob_shmem_offset: None,
+            scanouts: Default::default(),
+        }
+    }
+
+    /// Creates a new VirtioGpuResource blob metadata
+    pub fn new_blob(resource_id: u32, blob_size: u64) -> VirtioGpuResource {
+        VirtioGpuResource {
+            id: resource_id,
+            width: 0,
+            height: 0,
+            blob_size: blob_size,
+            blob_shmem_offset: None,
             scanouts: Default::default(),
         }
     }
@@ -326,6 +333,7 @@ pub struct VirtioGpuScanout {
 pub struct RutabagaVirtioGpu {
     pub(crate) rutabaga: Rutabaga,
     pub(crate) gpu_backend: GpuBackend,
+    pub(crate) backend: Backend,
     pub(crate) resources: BTreeMap<u32, VirtioGpuResource>,
     pub(crate) fence_state: Arc<Mutex<FenceState>>,
     pub(crate) scanouts: [Option<VirtioGpuScanout>; VIRTIO_GPU_MAX_SCANOUTS],
@@ -389,7 +397,7 @@ impl RutabagaVirtioGpu {
         })
     }
 
-    pub fn new(queue_ctl: &VringRwLock, renderer: GpuMode, gpu_backend: GpuBackend) -> Self {
+    pub fn new(queue_ctl: &VringRwLock, renderer: GpuMode, gpu_backend: GpuBackend, backend: Backend) -> Self {
         let component = match renderer {
             GpuMode::ModeVirglRenderer => RutabagaComponentType::VirglRenderer,
             GpuMode::ModeGfxstream => RutabagaComponentType::Gfxstream,
@@ -410,6 +418,7 @@ impl RutabagaVirtioGpu {
         Self {
             rutabaga,
             gpu_backend,
+            backend,
             resources: Default::default(),
             fence_state,
             scanouts: Default::default(),
@@ -569,7 +578,7 @@ impl VirtioGpu for RutabagaVirtioGpu {
         self.rutabaga
             .resource_create_3d(resource_id, resource_create_3d)?;
 
-        let resource = VirtioGpuResource::new(
+        let resource = VirtioGpuResource::new_3d(
             resource_id,
             resource_create_3d.width,
             resource_create_3d.height,
@@ -848,33 +857,127 @@ impl VirtioGpu for RutabagaVirtioGpu {
 
     fn resource_create_blob(
         &mut self,
-        _ctx_id: u32,
-        _resource_id: u32,
-        _resource_create_blob: ResourceCreateBlob,
-        _vecs: Vec<(GuestAddress, usize)>,
-        _mem: &GuestMemoryMmap,
+        ctx_id: u32,
+        resource_id: u32,
+        resource_create_blob: ResourceCreateBlob,
+        vecs: Vec<(GuestAddress, usize)>,
+        mem: &GuestMemoryMmap,
     ) -> VirtioGpuResult {
-        error!("Not implemented: resource_create_blob");
-        Err(ErrUnspec)
+        let mut rutabaga_iovecs = None;
+
+        if resource_create_blob.blob_flags & VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE != 0 {
+            panic!("GUEST_HANDLE unimplemented");
+        } else if resource_create_blob.blob_mem != VIRTIO_GPU_BLOB_MEM_HOST3D {
+            rutabaga_iovecs =
+                Some(sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?);
+        }
+
+        self.rutabaga.resource_create_blob(
+            ctx_id,
+            resource_id,
+            resource_create_blob,
+            rutabaga_iovecs,
+            None,
+        )?;
+
+        let resource = VirtioGpuResource::new_blob(resource_id, resource_create_blob.size);
+
+        debug_assert!(
+            !self.resources.contains_key(&resource_id),
+            "Resource ID {} already exists in the resources map.",
+            resource_id
+        );
+
+        // Rely on rutabaga to check for duplicate resource ids.
+        self.resources.insert(resource_id, resource);
+        Ok(self.result_from_query(resource_id))
     }
 
     fn resource_map_blob(
         &mut self,
-        _resource_id: u32,
-        _shm_region: &VirtioShmRegion,
-        _offset: u64,
+        resource_id: u32,
+        offset: u64,
     ) -> VirtioGpuResult {
-        error!("Not implemented: resource_map_blob");
-        Err(ErrUnspec)
+        let resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        let map_info = self.rutabaga.map_info(resource_id).map_err(|_| ErrUnspec)?;
+        if let Ok(export) = self.rutabaga.export_blob(resource_id) {
+            if export.handle_type != RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD {
+
+                trace!(
+                    "Mapping blob resource_id={resource_id} offset={offset} resource.size={sz}",
+                    sz = resource.blob_size
+                );
+
+                let flags = match map_info & RUTABAGA_MAP_ACCESS_MASK {
+                    rutabaga_gfx::RUTABAGA_MAP_ACCESS_READ => VhostUserMMapFlags::MAP_R,
+                    rutabaga_gfx::RUTABAGA_MAP_ACCESS_WRITE => VhostUserMMapFlags::MAP_W,
+                    rutabaga_gfx::RUTABAGA_MAP_ACCESS_RW => {
+                        VhostUserMMapFlags::MAP_R | VhostUserMMapFlags::MAP_W
+                    }
+                    _ => return Err(ErrUnspec),
+                };
+
+                let map_request = VhostUserMMap {
+                    shmid: 0,
+                    padding: Default::default(),
+                    fd_offset: 0,
+                    shm_offset: offset,
+                    len: resource.blob_size,
+                    flags: flags.bits(),
+                };
+
+                self.backend
+                    .shmem_map(&map_request, &export.os_handle)
+                    .expect("Failed to mmap by frontend");
+
+                resource.blob_shmem_offset = Some(offset);
+            } else {
+                return Err(ErrUnspec);
+            }
+        } else {
+            return Err(ErrUnspec);
+        }
+
+        // Access flags not a part of the virtio-gpu spec.
+        Ok(OkMapInfo {
+            map_info: map_info & RUTABAGA_MAP_CACHE_MASK,
+        })
     }
 
     fn resource_unmap_blob(
         &mut self,
-        _resource_id: u32,
-        _shm_region: &VirtioShmRegion,
+        resource_id: u32,
     ) -> VirtioGpuResult {
-        error!("Not implemented: resource_unmap_blob");
-        Err(ErrUnspec)
+        let resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        let Some(offset) = resource.blob_shmem_offset else {
+            log::warn!("Guest tried to unmap blob resource with resource_id={resource_id}, but it is not mapped!");
+            return Err(ErrInvalidParameter);
+        };
+
+        let unmap_request = VhostUserMMap {
+            shmid: 0,
+            padding: Default::default(),
+            fd_offset: 0,
+            shm_offset: offset,
+            len: resource.blob_size,
+            flags: 0
+        };
+
+        self.backend
+            .shmem_unmap(&unmap_request)
+            .expect("Failed to unmap by fronted");
+
+        resource.blob_shmem_offset = None;
+
+        Ok(OkNoData)
     }
 
     fn get_event_poll_fd(&self) -> Option<EventFd> {
@@ -905,6 +1008,11 @@ mod tests {
         GpuBackend::from_stream(backend)
     }
 
+    fn dummy_backend() -> Backend {
+        let (_, backend) = UnixStream::pair().unwrap();
+        Backend::from_stream(backend)
+    }
+
     fn new_gpu() -> RutabagaVirtioGpu {
         let rutabaga = RutabagaBuilder::new(RutabagaComponentType::VirglRenderer, 0)
             .set_use_egl(true)
@@ -917,6 +1025,7 @@ mod tests {
         RutabagaVirtioGpu {
             rutabaga,
             gpu_backend: dummy_gpu_backend(),
+            backend: dummy_backend(),
             resources: Default::default(),
             fence_state: Arc::new(Mutex::new(Default::default())),
             scanouts: Default::default(),

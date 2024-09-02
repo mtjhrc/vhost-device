@@ -645,7 +645,7 @@ pub enum GpuCommand {
         cmd_data: Vec<u8>,
         fence_ids: Vec<u64>,
     },
-    ResourceCreateBlob(virtio_gpu_resource_create_blob),
+    ResourceCreateBlob(virtio_gpu_resource_create_blob, Vec<(GuestAddress, usize)>),
     ResourceMapBlob(virtio_gpu_resource_map_blob),
     ResourceUnmapBlob(virtio_gpu_resource_unmap_blob),
     UpdateCursor(virtio_gpu_update_cursor),
@@ -709,7 +709,7 @@ impl fmt::Debug for GpuCommand {
             TransferToHost3d(_info) => f.debug_struct("TransferToHost3d").finish(),
             TransferFromHost3d(_info) => f.debug_struct("TransferFromHost3d").finish(),
             CmdSubmit3d { .. } => f.debug_struct("CmdSubmit3d").finish(),
-            ResourceCreateBlob(_info) => f.debug_struct("ResourceCreateBlob").finish(),
+            ResourceCreateBlob(_info, _vecs) => f.debug_struct("ResourceCreateBlob").finish(),
             ResourceMapBlob(_info) => f.debug_struct("ResourceMapBlob").finish(),
             ResourceUnmapBlob(_info) => f.debug_struct("ResourceUnmapBlob").finish(),
             UpdateCursor(_info) => f.debug_struct("UpdateCursor").finish(),
@@ -717,6 +717,20 @@ impl fmt::Debug for GpuCommand {
             ResourceAssignUuid(_info) => f.debug_struct("ResourceAssignUuid").finish(),
         }
     }
+}
+
+fn read_mem_entries(
+    reader: &mut Reader,
+    num_entries: u32,
+) -> Result<Vec<(GuestAddress, usize)>, GpuCommandDecodeError> {
+    let mut entries = Vec::with_capacity(num_entries as usize);
+
+    for _ in 0..num_entries {
+        let entry: virtio_gpu_mem_entry =
+            reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?;
+        entries.push((GuestAddress(entry.addr), entry.length as usize))
+    }
+    Ok(entries)
 }
 
 impl GpuCommand {
@@ -755,12 +769,7 @@ impl GpuCommand {
             VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING => {
                 let info: virtio_gpu_resource_attach_backing =
                     reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?;
-                let mut entries = Vec::with_capacity(info.nr_entries as usize);
-                for _ in 0..info.nr_entries {
-                    let entry: virtio_gpu_mem_entry =
-                        reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?;
-                    entries.push((GuestAddress(entry.addr), entry.length as usize))
-                }
+                let entries = read_mem_entries(reader, info.nr_entries)?;
                 ResourceAttachBacking(info, entries)
             }
             VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING => {
@@ -817,7 +826,11 @@ impl GpuCommand {
                 }
             }
             VIRTIO_GPU_CMD_RESOURCE_CREATE_BLOB => {
-                ResourceCreateBlob(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
+                let info: virtio_gpu_resource_create_blob =
+                    reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?;
+
+                let entries = read_mem_entries(reader, info.nr_entries)?;
+                ResourceCreateBlob(info, entries)
             }
             VIRTIO_GPU_CMD_RESOURCE_MAP_BLOB => {
                 ResourceMapBlob(reader.read_obj().map_err(|_| Error::DescriptorReadFailed)?)
@@ -1188,7 +1201,7 @@ mod tests {
             fence_ids: Vec::new(),
         };
         let resource_create_blob =
-            GpuCommand::ResourceCreateBlob(virtio_gpu_resource_create_blob::default());
+            GpuCommand::ResourceCreateBlob(virtio_gpu_resource_create_blob::default(), Vec::new());
         let resource_map_blob =
             GpuCommand::ResourceMapBlob(virtio_gpu_resource_map_blob::default());
         let resource_unmap_blob =
