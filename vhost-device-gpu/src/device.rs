@@ -1398,7 +1398,9 @@ mod tests {
             assert_eq!(backend.features(), 0x0101_7100_001B);
             assert_eq!(
                 backend.protocol_features(),
-                VhostUserProtocolFeatures::CONFIG | VhostUserProtocolFeatures::MQ
+                VhostUserProtocolFeatures::CONFIG | VhostUserProtocolFeatures::MQ |
+                VhostUserProtocolFeatures::BACKEND_REQ | VhostUserProtocolFeatures::REPLY_ACK |
+                VhostUserProtocolFeatures::BACKEND_SEND_FD
             );
             assert_eq!(backend.queues_per_thread(), vec![0xffff_ffff]);
             assert_eq!(backend.get_config(0, 0), Vec::<u8>::new());
@@ -1420,7 +1422,7 @@ mod tests {
             let vring = VringRwLock::new(mem, 0x1000).unwrap();
             vring.set_queue_info(0x100, 0x200, 0x300).unwrap();
             vring.set_queue_ready(true);
-
+            backend.set_backend_req_fd(dummy_backend_request_socket());
             assert_eq!(
                 backend
                     .handle_event(0, EventSet::OUT, &[vring.clone()], 0)
@@ -1541,6 +1543,7 @@ mod tests {
                 .unwrap();
 
             backend.set_gpu_socket(gpu_backend).unwrap();
+            backend.set_backend_req_fd(dummy_backend_request_socket());
 
             // Unfortunately, there is no way to create a VringEpollHandler directly (the ::new is not public)
             // So we create a daemon to create the epoll handler for us here
