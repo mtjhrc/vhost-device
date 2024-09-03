@@ -1256,7 +1256,7 @@ dependencies = [
 [[package]]
 name = "vhost"
 version = "0.11.0"
-source = "git+https://github.com/rust-vmm/vhost.git?branch=main#5c6080275fe6c167c9f4b2b64848e6908be6233d"
+source = "git+https://github.com/mtjhrc/vhost.git?branch=shmem#630cd66487f709453582fefa1fd444c08701c39f"
 dependencies = [
  "bitflags 2.6.0",
  "libc",
@@ -1319,8 +1319,8 @@ dependencies = [
  "rusty-fork",
  "rutabaga_gfx",
  "thiserror",
- "vhost 0.11.0 (git+https://github.com/rust-vmm/vhost.git?branch=main)",
- "vhost-user-backend 0.15.0 (git+https://github.com/rust-vmm/vhost.git?branch=main)",
+ "vhost 0.11.0 (git+https://github.com/mtjhrc/vhost.git?branch=shmem)",
+ "vhost-user-backend 0.15.0 (git+https://github.com/mtjhrc/vhost.git?branch=shmem)",
  "virtio-bindings",
  "virtio-queue",
  "vm-memory",
@@ -1371,11 +1371,11 @@ dependencies = [
 [[package]]
 name = "vhost-user-backend"
 version = "0.15.0"
-source = "git+https://github.com/rust-vmm/vhost.git?branch=main#5c6080275fe6c167c9f4b2b64848e6908be6233d"
+source = "git+https://github.com/mtjhrc/vhost.git?branch=shmem#630cd66487f709453582fefa1fd444c08701c39f"
 dependencies = [
  "libc",
  "log",
- "vhost 0.11.0 (git+https://github.com/rust-vmm/vhost.git?branch=main)",
+ "vhost 0.11.0 (git+https://github.com/mtjhrc/vhost.git?branch=shmem)",
  "virtio-bindings",
  "virtio-queue",
  "vm-memory",
