@@ -22,8 +22,8 @@ use crate::{
 };
 use log::{debug, error, trace, warn};
 use rutabaga_gfx::{
-    ResourceCreate3D, RutabagaFence, Transfer3D, RUTABAGA_PIPE_BIND_RENDER_TARGET,
-    RUTABAGA_PIPE_TEXTURE_2D,
+    ResourceCreate3D, ResourceCreateBlob, RutabagaFence, Transfer3D,
+    RUTABAGA_PIPE_BIND_RENDER_TARGET, RUTABAGA_PIPE_TEXTURE_2D,
 };
 use std::{
     cell::RefCell,
@@ -357,18 +357,28 @@ impl VhostUserGpuBackendInner {
                 fence_ids,
                 mut cmd_data,
             } => virtio_gpu.submit_command(hdr.ctx_id, &mut cmd_data, &fence_ids),
-            GpuCommand::ResourceCreateBlob(_info) => {
-                panic!("virtio_gpu: GpuCommand::ResourceCreateBlob unimplemented");
+            GpuCommand::ResourceCreateBlob(info, vecs) => {
+                let create_blob = ResourceCreateBlob {
+                    size: info.size,
+                    blob_mem: info.blob_mem,
+                    blob_id: info.blob_id,
+                    blob_flags: info.blob_flags,
+                };
+                virtio_gpu.resource_create_blob(
+                    hdr.ctx_id,
+                    info.resource_id,
+                    create_blob,
+                    vecs,
+                    mem,
+                )
             }
             GpuCommand::SetScanoutBlob(_info) => {
                 panic!("virtio_gpu: GpuCommand::SetScanoutBlob unimplemented");
             }
-            GpuCommand::ResourceMapBlob(_info) => {
-                panic!("virtio_gpu: GpuCommand::ResourceMapBlob unimplemented");
+            GpuCommand::ResourceMapBlob(info) => {
+                virtio_gpu.resource_map_blob(info.resource_id, info.offset)
             }
-            GpuCommand::ResourceUnmapBlob(_info) => {
-                panic!("virtio_gpu: GpuCommand::ResourceUnmapBlob unimplemented");
-            }
+            GpuCommand::ResourceUnmapBlob(info) => virtio_gpu.resource_unmap_blob(info.resource_id),
         }
     }
 
