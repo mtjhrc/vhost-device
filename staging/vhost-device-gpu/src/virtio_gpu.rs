@@ -14,9 +14,11 @@ use std::{
 
 use libc::c_void;
 use rutabaga_gfx::{
-    ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaComponentType,
-    RutabagaFence, RutabagaFenceHandler, RutabagaIntoRawDescriptor, RutabagaIovec, Transfer3D,
-    RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_CACHE_MASK, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
+    Resource3DInfo, ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder,
+    RutabagaComponentType, RutabagaFence, RutabagaFenceHandler, RutabagaIntoRawDescriptor,
+    RutabagaIovec, RutabagaResult, Transfer3D, RUTABAGA_BLOB_FLAG_USE_CROSS_DEVICE,
+    RUTABAGA_BLOB_FLAG_USE_SHAREABLE, RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_CACHE_MASK,
+    RUTABAGA_MEM_HANDLE_TYPE_DMABUF, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD,
 };
 use vhost::vhost_user::message::{VhostUserMMap, VhostUserMMapFlags};
 use vhost::vhost_user::{
@@ -325,6 +327,7 @@ impl VirtioGpuResource {
 
 pub struct VirtioGpuScanout {
     resource_id: u32,
+    dmabuf_fd: Option<OwnedFd>,
 }
 
 pub struct RutabagaVirtioGpu {
@@ -405,12 +408,14 @@ impl RutabagaVirtioGpu {
             GpuMode::ModeGfxstream => RutabagaComponentType::Gfxstream,
         };
         let builder = RutabagaBuilder::new(component, 0)
-            .set_use_egl(true)
-            .set_use_gles(true)
-            .set_use_glx(true)
-            .set_use_surfaceless(true)
+            .set_use_egl(false)
+            .set_use_gles(false)
+            .set_use_glx(false)
+            .set_use_surfaceless(false)
             .set_use_vulkan(true)
-            .set_use_external_blob(true);
+            //.set_use_system_blob(true)
+            .set_use_external_blob(true)
+            .set_use_vulkan(true);
 
         let fence_state = Arc::new(Mutex::new(Default::default()));
         let fence = Self::create_fence_handler(queue_ctl.clone(), fence_state.clone());
@@ -473,6 +478,39 @@ impl RutabagaVirtioGpu {
             .map_err(|e| format!("{e}"))?;
 
         Ok(())
+    }
+
+    fn try_export_resource_as_dmabuf(
+        &mut self,
+        resource_id: u32,
+    ) -> Option<(Resource3DInfo, OwnedFd)> {
+        let handle = match self.rutabaga.export_blob(resource_id) {
+            Ok(handle) if handle.handle_type == RUTABAGA_MEM_HANDLE_TYPE_DMABUF => handle,
+            Ok(handle) => {
+                trace!(
+                    "Unsupported handle type for blob with resource_id={resource_id}: {t}",
+                    t = handle.handle_type
+                );
+                return None;
+            }
+            Err(e) => {
+                trace!("Cannot export blob resource with id {resource_id}: {e}");
+                return None;
+            }
+        };
+
+        let info = match self.rutabaga.query(resource_id) {
+            Ok(info) => info,
+            Err(e) => {
+                trace!("Cannot query resource with id {resource_id}: {e}");
+                return None;
+            }
+        };
+
+        // SAFETY: We assume the file descriptor is valid since Rutabaga didn't report any error.
+        let fd = unsafe { OwnedFd::from_raw_fd(handle.os_handle.into_raw_descriptor()) };
+
+        Some((info, fd))
     }
 }
 
@@ -549,8 +587,40 @@ impl VirtioGpu for RutabagaVirtioGpu {
 
         debug!("Enabling scanout scanout_id={scanout_id}, resource_id={resource_id}: {rect:?}");
 
+        let mut dmabuf_fd = None;
+        let no_scanout = scanout.is_none();
+
+        if let Some((info, fd)) = self.try_export_resource_as_dmabuf(resource_id) {
+            log::trace!("[dmabuf] Using fast-path dmabuf scanout !!!! :) :)");
+            dmabuf_fd = Some(fd);
+            self.gpu_backend
+                .set_dmabuf_scanout2(
+                    &VhostUserGpuDMABUFScanout2 {
+                        dmabuf_scanout: VhostUserGpuDMABUFScanout {
+                            scanout_id,
+                            x: 0,
+                            y: 0,
+                            width: rect.width,
+                            height: rect.height,
+                            fd_width: info.width,
+                            fd_height: info.height,
+                            fd_stride: info.strides[0],
+                            fd_flags: 0,
+                            fd_drm_fourcc: info.drm_fourcc,
+                        },
+                        modifier: info.modifier,
+                    },
+                    dmabuf_fd.as_ref(),
+                )
+                .map_err(|e| {
+                    error!("Failed to set_dmabuf_scanout: {e:?}");
+                    ErrUnspec
+                })?;
+
         // QEMU doesn't like (it lags) when we call set_scanout while the scanout is enabled
-        if scanout.is_none() {
+        } else if no_scanout {
+            log::trace!("[dmabuf] Using plain scanout");
+
             self.gpu_backend
                 .set_scanout(&VhostUserGpuScanout {
                     scanout_id,
@@ -568,8 +638,17 @@ impl VirtioGpu for RutabagaVirtioGpu {
             .get_mut(&resource_id)
             .ok_or(ErrInvalidResourceId)?;
 
+        // TODO: fix duplicate
+        let scanout = self
+            .scanouts
+            .get_mut(scanout_id as usize)
+            .ok_or(ErrInvalidScanoutId)?;
+
         resource.scanouts.enable(scanout_id);
-        *scanout = Some(VirtioGpuScanout { resource_id });
+        *scanout = Some(VirtioGpuScanout {
+            resource_id,
+            dmabuf_fd,
+        });
         Ok(OkNoData)
     }
 
@@ -615,41 +694,60 @@ impl VirtioGpu for RutabagaVirtioGpu {
             .ok_or(ErrInvalidResourceId)?;
 
         for scanout_id in resource.scanouts.iter_enabled() {
-            let resource_size = resource.calculate_size().map_err(|e| {
-                error!(
-                    "Resource {id} size calculation failed: {e}",
-                    id = resource.id
-                );
-                ErrUnspec
-            })?;
+            let scanout = self.scanouts[0].as_ref().unwrap();
 
-            let mut data = vec![0; resource_size];
-
-            // Gfxstream doesn't support transfer_read for portion of the resource. So we always
-            // read the whole resource, even if the guest specified to flush only a portion of it.
-            //
-            // The function stream_renderer_transfer_read_iov seems to ignore the stride and
-            // transfer_box parameters and expects the provided buffer to fit the whole resource.
-            if let Err(e) = self.read_2d_resource(resource, &mut data) {
-                log::error!("Failed to read resource {resource_id} for scanout {scanout_id}: {e}");
-                continue;
-            }
-
-            self.gpu_backend
-                .update_scanout(
-                    &VhostUserGpuUpdate {
+            if let Some(dmabuf_fd) = scanout.dmabuf_fd.as_ref() {
+                self.gpu_backend
+                    .update_dmabuf_scanout(&VhostUserGpuUpdate {
                         scanout_id,
                         x: 0,
                         y: 0,
                         width: resource.width,
                         height: resource.height,
-                    },
-                    &data,
-                )
-                .map_err(|e| {
-                    error!("Failed to update_scanout: {e:?}");
+                    })
+                    .map_err(|e| {
+                        error!("Failed to update_dmabuf_scanout: {e:?}");
+                        ErrUnspec
+                    })?
+            } else {
+                let resource_size = resource.calculate_size().map_err(|e| {
+                    error!(
+                        "Resource {id} size calculation failed: {e}",
+                        id = resource.id
+                    );
                     ErrUnspec
-                })?
+                })?;
+
+                let mut data = vec![0; resource_size];
+
+                // Gfxstream doesn't support transfer_read for portion of the resource. So we always
+                // read the whole resource, even if the guest specified to flush only a portion of it.
+                //
+                // The function stream_renderer_transfer_read_iov seems to ignore the stride and
+                // transfer_box parameters and expects the provided buffer to fit the whole resource.
+                if let Err(e) = self.read_2d_resource(resource, &mut data) {
+                    log::error!(
+                        "Failed to read resource {resource_id} for scanout {scanout_id}: {e}"
+                    );
+                    continue;
+                }
+
+                self.gpu_backend
+                    .update_scanout(
+                        &VhostUserGpuUpdate {
+                            scanout_id,
+                            x: 0,
+                            y: 0,
+                            width: resource.width,
+                            height: resource.height,
+                        },
+                        &data,
+                    )
+                    .map_err(|e| {
+                        error!("Failed to update_scanout: {e:?}");
+                        ErrUnspec
+                    })?
+            }
         }
 
         Ok(OkNoData)
@@ -862,7 +960,7 @@ impl VirtioGpu for RutabagaVirtioGpu {
         &mut self,
         ctx_id: u32,
         resource_id: u32,
-        resource_create_blob: ResourceCreateBlob,
+        mut resource_create_blob: ResourceCreateBlob,
         vecs: Vec<(GuestAddress, usize)>,
         mem: &GuestMemoryMmap,
     ) -> VirtioGpuResult {
@@ -874,6 +972,9 @@ impl VirtioGpu for RutabagaVirtioGpu {
             rutabaga_iovecs =
                 Some(sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?);
         }
+
+        resource_create_blob.blob_flags |=
+            RUTABAGA_BLOB_FLAG_USE_SHAREABLE | RUTABAGA_BLOB_FLAG_USE_CROSS_DEVICE;
 
         self.rutabaga.resource_create_blob(
             ctx_id,
