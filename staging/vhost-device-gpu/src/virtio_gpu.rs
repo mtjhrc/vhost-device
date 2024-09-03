@@ -80,11 +80,7 @@ impl From<virtio_gpu_rect> for Rectangle {
 #[allow(clippy::needless_lifetimes)]
 pub trait VirtioGpu {
     /// Uses the hypervisor to unmap the blob resource.
-    fn resource_unmap_blob(
-        &mut self,
-        resource_id: u32,
-        shm_region: &VirtioShmRegion,
-    ) -> VirtioGpuResult;
+    fn resource_unmap_blob(&mut self, resource_id: u32) -> VirtioGpuResult;
 
     /// Uses the hypervisor to map the rutabaga blob resource.
     ///
@@ -92,12 +88,7 @@ pub trait VirtioGpu {
     /// rutabaga as ExternalMapping.
     /// When sandboxing is enabled, external_blob is set and opaque fds must be mapped in the
     /// hypervisor process by Vulkano using metadata provided by Rutabaga::vulkan_info().
-    fn resource_map_blob(
-        &mut self,
-        resource_id: u32,
-        shm_region: &VirtioShmRegion,
-        offset: u64,
-    ) -> VirtioGpuResult;
+    fn resource_map_blob(&mut self, resource_id: u32, offset: u64) -> VirtioGpuResult;
 
     /// Creates a blob resource using rutabaga.
     fn resource_create_blob(
@@ -236,13 +227,6 @@ pub trait VirtioGpu {
 
     /// Polls the Rutabaga backend.
     fn event_poll(&self);
-}
-
-#[derive(Clone, Default)]
-pub struct VirtioShmRegion {
-    pub host_addr: u64,
-    pub guest_addr: u64,
-    pub size: usize,
 }
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -865,21 +849,12 @@ impl VirtioGpu for RutabagaVirtioGpu {
         Err(ErrUnspec)
     }
 
-    fn resource_map_blob(
-        &mut self,
-        _resource_id: u32,
-        _shm_region: &VirtioShmRegion,
-        _offset: u64,
-    ) -> VirtioGpuResult {
+    fn resource_map_blob(&mut self, _resource_id: u32, _offset: u64) -> VirtioGpuResult {
         error!("Not implemented: resource_map_blob");
         Err(ErrUnspec)
     }
 
-    fn resource_unmap_blob(
-        &mut self,
-        _resource_id: u32,
-        _shm_region: &VirtioShmRegion,
-    ) -> VirtioGpuResult {
+    fn resource_unmap_blob(&mut self, _resource_id: u32) -> VirtioGpuResult {
         error!("Not implemented: resource_unmap_blob");
         Err(ErrUnspec)
     }
