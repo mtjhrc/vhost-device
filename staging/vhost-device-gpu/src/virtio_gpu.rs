@@ -3,7 +3,10 @@
 //
 // SPDX-License-Identifier: Apache-2.0 or BSD-3-Clause
 
+use libc::c_void;
 use log::{debug, error, trace};
+use rutabaga_gfx::{Resource3DInfo, ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaComponentType, RutabagaFence, RutabagaFenceHandler, RutabagaIntoRawDescriptor, RutabagaIovec, RutabagaResult, Transfer3D, RUTABAGA_BLOB_FLAG_USE_CROSS_DEVICE, RUTABAGA_BLOB_FLAG_USE_SHAREABLE, RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_CACHE_MASK, RUTABAGA_MEM_HANDLE_TYPE_DMABUF, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::{
     collections::BTreeMap,
     io::IoSliceMut,
@@ -11,20 +14,25 @@ use std::{
     result::Result,
     sync::{Arc, Mutex},
 };
-
-use libc::c_void;
-use rutabaga_gfx::{ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaComponentType, RutabagaFence, RutabagaFenceHandler, RutabagaIntoRawDescriptor, RutabagaIovec, Transfer3D, RUTABAGA_MAP_ACCESS_MASK, RUTABAGA_MAP_CACHE_MASK, RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD};
-use vhost::vhost_user::{gpu_message::{
-    VhostUserGpuCursorPos, VhostUserGpuCursorUpdate, VhostUserGpuEdidRequest,
-    VhostUserGpuScanout, VhostUserGpuUpdate,
-}, Backend, GpuBackend, VhostUserFrontendReqHandler};
 use vhost::vhost_user::message::{VhostUserMMap, VhostUserMMapFlags};
+use vhost::vhost_user::{
+    gpu_message::{
+        VhostUserGpuCursorPos, VhostUserGpuCursorUpdate, VhostUserGpuDMABUFScanout,
+        VhostUserGpuDMABUFScanout2, VhostUserGpuEdidRequest, VhostUserGpuScanout,
+        VhostUserGpuUpdate,
+    },
+    Backend, GpuBackend, HandlerResult, VhostUserFrontendReqHandler,
+};
 use vhost_user_backend::{VringRwLock, VringT};
 use virtio_bindings::virtio_gpu::VIRTIO_GPU_BLOB_MEM_HOST3D;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 use vmm_sys_util::eventfd::EventFd;
 
-use crate::protocol::{virtio_gpu_rect, GpuResponse, GpuResponse::*, GpuResponsePlaneInfo, VirtioGpuResult, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, VIRTIO_GPU_FLAG_INFO_RING_IDX, VIRTIO_GPU_MAX_SCANOUTS};
+use crate::protocol::{
+    virtio_gpu_rect, GpuResponse, GpuResponse::*, GpuResponsePlaneInfo, VirtioGpuResult,
+    VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE, VIRTIO_GPU_FLAG_INFO_RING_IDX,
+    VIRTIO_GPU_MAX_SCANOUTS,
+};
 use crate::{device::Error, GpuMode};
 
 fn sglist_to_rutabaga_iovecs(
@@ -73,10 +81,7 @@ impl From<virtio_gpu_rect> for Rectangle {
 #[allow(clippy::needless_lifetimes)]
 pub trait VirtioGpu {
     /// Uses the hypervisor to unmap the blob resource.
-    fn resource_unmap_blob(
-        &mut self,
-        resource_id: u32,
-    ) -> VirtioGpuResult;
+    fn resource_unmap_blob(&mut self, resource_id: u32) -> VirtioGpuResult;
 
     /// Uses the hypervisor to map the rutabaga blob resource.
     ///
@@ -84,11 +89,7 @@ pub trait VirtioGpu {
     /// rutabaga as ExternalMapping.
     /// When sandboxing is enabled, external_blob is set and opaque fds must be mapped in the
     /// hypervisor process by Vulkano using metadata provided by Rutabaga::vulkan_info().
-    fn resource_map_blob(
-        &mut self,
-        resource_id: u32,
-        offset: u64,
-    ) -> VirtioGpuResult;
+    fn resource_map_blob(&mut self, resource_id: u32, offset: u64) -> VirtioGpuResult;
 
     /// Creates a blob resource using rutabaga.
     fn resource_create_blob(
@@ -267,7 +268,7 @@ impl AssociatedScanouts {
         self.0 ^= 1 << scanout_id;
     }
 
-    fn iter_enabled(self) -> impl Iterator<Item = u32> {
+    fn iter_enabled(self) -> impl Iterator<Item=u32> {
         (0..VIRTIO_GPU_MAX_SCANOUTS)
             .filter(move |i| ((self.0 >> i) & 1) == 1)
             .map(|n| n as u32)
@@ -328,6 +329,7 @@ impl VirtioGpuResource {
 
 pub struct VirtioGpuScanout {
     resource_id: u32,
+    dmabuf_fd: Option<OwnedFd>,
 }
 
 pub struct RutabagaVirtioGpu {
@@ -397,17 +399,25 @@ impl RutabagaVirtioGpu {
         })
     }
 
-    pub fn new(queue_ctl: &VringRwLock, renderer: GpuMode, gpu_backend: GpuBackend, backend: Backend) -> Self {
+    pub fn new(
+        queue_ctl: &VringRwLock,
+        renderer: GpuMode,
+        gpu_backend: GpuBackend,
+        backend: Backend,
+    ) -> Self {
         let component = match renderer {
             GpuMode::ModeVirglRenderer => RutabagaComponentType::VirglRenderer,
             GpuMode::ModeGfxstream => RutabagaComponentType::Gfxstream,
         };
         let builder = RutabagaBuilder::new(component, 0)
-            .set_use_egl(true)
-            .set_use_gles(true)
-            .set_use_glx(true)
-            .set_use_surfaceless(true)
-            .set_use_external_blob(true);
+            .set_use_egl(false)
+            .set_use_gles(false)
+            .set_use_glx(false)
+            .set_use_surfaceless(false)
+            .set_use_vulkan(true)
+            //.set_use_system_blob(true)
+            .set_use_external_blob(true)
+            .set_use_vulkan(true);
 
         let fence_state = Arc::new(Mutex::new(Default::default()));
         let fence = Self::create_fence_handler(queue_ctl.clone(), fence_state.clone());
@@ -470,6 +480,40 @@ impl RutabagaVirtioGpu {
             .map_err(|e| format!("{e}"))?;
 
         Ok(())
+    }
+
+    fn try_export_resource_as_dmabuf(
+        &mut self,
+        resource_id: u32,
+    ) -> Option<(Resource3DInfo, OwnedFd)> {
+        let handle = match self.rutabaga.export_blob(resource_id) {
+            Ok(handle) if handle.handle_type == RUTABAGA_MEM_HANDLE_TYPE_DMABUF => handle,
+            Ok(handle) => {
+                trace!(
+                    "Unsupported handle type for blob with resource_id={resource_id}: {t}",
+                    t = handle.handle_type
+                );
+                return None;
+            }
+            Err(e) => {
+                trace!("Cannot export blob resource with id {resource_id}: {e}");
+                return None;
+            }
+        };
+
+        let info = match self.rutabaga.query(resource_id) {
+            Ok(info) => info,
+            Err(e) => {
+                trace!("Cannot query resource with id {resource_id}: {e}");
+                return None;
+            }
+        };
+
+
+        // SAFETY: We assume the file descriptor is valid since Rutabaga didn't report any error.
+        let fd = unsafe { OwnedFd::from_raw_fd(handle.os_handle.into_raw_descriptor()) };
+
+        Some((info, fd))
     }
 }
 
@@ -546,8 +590,40 @@ impl VirtioGpu for RutabagaVirtioGpu {
 
         debug!("Enabling scanout scanout_id={scanout_id}, resource_id={resource_id}: {rect:?}");
 
+        let mut dmabuf_fd = None;
+        let no_scanout =  scanout.is_none();
+
+        if let Some((info, fd)) = self.try_export_resource_as_dmabuf(resource_id) {
+            log::trace!("[dmabuf] Using fast-path dmabuf scanout !!!! :) :)");
+            dmabuf_fd = Some(fd);
+            self.gpu_backend
+                .set_dmabuf_scanout2(
+                    &VhostUserGpuDMABUFScanout2 {
+                        dmabuf_scanout: VhostUserGpuDMABUFScanout {
+                            scanout_id,
+                            x: 0,
+                            y: 0,
+                            width: rect.width,
+                            height: rect.height,
+                            fd_width: info.width,
+                            fd_height: info.height,
+                            fd_stride: info.strides[0],
+                            fd_flags: 0,
+                            fd_drm_fourcc: info.drm_fourcc,
+                        },
+                        modifier: info.modifier,
+                    },
+                    dmabuf_fd.as_ref(),
+                )
+                .map_err(|e| {
+                    error!("Failed to set_dmabuf_scanout: {e:?}");
+                    ErrUnspec
+                })?;
+
         // QEMU doesn't like (it lags) when we call set_scanout while the scanout is enabled
-        if scanout.is_none() {
+        } else if no_scanout {
+            log::trace!("[dmabuf] Using plain scanout");
+
             self.gpu_backend
                 .set_scanout(&VhostUserGpuScanout {
                     scanout_id,
@@ -560,58 +636,86 @@ impl VirtioGpu for RutabagaVirtioGpu {
                 })?;
         }
 
-        let resource = self
-            .resources
-            .get_mut(&resource_id)
-            .ok_or(ErrInvalidResourceId)?;
+    let resource = self
+    .resources
+    .get_mut( & resource_id)
+    .ok_or(ErrInvalidResourceId) ?;
 
-        resource.scanouts.enable(scanout_id);
-        *scanout = Some(VirtioGpuScanout { resource_id });
-        Ok(OkNoData)
+    // TODO: fix duplicate
+    let scanout = self
+    .scanouts
+    .get_mut(scanout_id as usize)
+    .ok_or(ErrInvalidScanoutId) ?;
+
+    resource.scanouts.enable(scanout_id);
+    * scanout = Some(VirtioGpuScanout {
+    resource_id,
+    dmabuf_fd,
+});
+Ok(OkNoData)
+}
+
+fn resource_create_3d(
+    &mut self,
+    resource_id: u32,
+    resource_create_3d: ResourceCreate3D,
+) -> VirtioGpuResult {
+
+    self.rutabaga
+        .resource_create_3d(resource_id, resource_create_3d)?;
+
+    let resource = VirtioGpuResource::new_3d(
+        resource_id,
+        resource_create_3d.width,
+        resource_create_3d.height,
+    );
+
+    debug_assert!(
+        !self.resources.contains_key(&resource_id),
+        "Resource ID {} already exists in the resources map.",
+        resource_id
+    );
+
+    // Rely on rutabaga to check for duplicate resource ids.
+    self.resources.insert(resource_id, resource);
+    Ok(self.result_from_query(resource_id))
+}
+
+fn unref_resource(&mut self, resource_id: u32) -> VirtioGpuResult {
+    self.rutabaga.unref_resource(resource_id)?;
+    Ok(OkNoData)
+}
+
+/// If the resource is the scanout resource, flush it to the display.
+fn flush_resource(&mut self, resource_id: u32, _rect: Rectangle) -> VirtioGpuResult {
+    if resource_id == 0 {
+        return Ok(OkNoData);
     }
 
-    fn resource_create_3d(
-        &mut self,
-        resource_id: u32,
-        resource_create_3d: ResourceCreate3D,
-    ) -> VirtioGpuResult {
-        self.rutabaga
-            .resource_create_3d(resource_id, resource_create_3d)?;
+    let resource = *self
+        .resources
+        .get(&resource_id)
+        .ok_or(ErrInvalidResourceId)?;
 
-        let resource = VirtioGpuResource::new_3d(
-            resource_id,
-            resource_create_3d.width,
-            resource_create_3d.height,
-        );
+    for scanout_id in resource.scanouts.iter_enabled() {
+        let scanout = self.scanouts[0].as_ref().unwrap();
 
-        debug_assert!(
-            !self.resources.contains_key(&resource_id),
-            "Resource ID {} already exists in the resources map.",
-            resource_id
-        );
-
-        // Rely on rutabaga to check for duplicate resource ids.
-        self.resources.insert(resource_id, resource);
-        Ok(self.result_from_query(resource_id))
-    }
-
-    fn unref_resource(&mut self, resource_id: u32) -> VirtioGpuResult {
-        self.rutabaga.unref_resource(resource_id)?;
-        Ok(OkNoData)
-    }
-
-    /// If the resource is the scanout resource, flush it to the display.
-    fn flush_resource(&mut self, resource_id: u32, _rect: Rectangle) -> VirtioGpuResult {
-        if resource_id == 0 {
-            return Ok(OkNoData);
-        }
-
-        let resource = *self
-            .resources
-            .get(&resource_id)
-            .ok_or(ErrInvalidResourceId)?;
-
-        for scanout_id in resource.scanouts.iter_enabled() {
+        if let Some(dmabuf_fd) = scanout.dmabuf_fd.as_ref() {
+            self.gpu_backend
+                .update_dmabuf_scanout(
+                    &VhostUserGpuUpdate {
+                        scanout_id,
+                        x: 0,
+                        y: 0,
+                        width: resource.width,
+                        height: resource.height,
+                    },
+                )
+                .map_err(|e| {
+                    error!("Failed to update_dmabuf_scanout: {e:?}");
+                    ErrUnspec
+                })?
+        } else {
             let resource_size = resource.calculate_size().map_err(|e| {
                 error!(
                     "Resource {id} size calculation failed: {e}",
@@ -648,349 +752,345 @@ impl VirtioGpu for RutabagaVirtioGpu {
                     ErrUnspec
                 })?
         }
-
-        Ok(OkNoData)
     }
 
-    fn transfer_write(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        transfer: Transfer3D,
-    ) -> VirtioGpuResult {
-        trace!("transfer_write ctx_id {ctx_id}, resource_id {resource_id}, {transfer:?}");
+    Ok(OkNoData)
+}
 
-        self.rutabaga
-            .transfer_write(ctx_id, resource_id, transfer)?;
-        Ok(OkNoData)
+fn transfer_write(
+    &mut self,
+    ctx_id: u32,
+    resource_id: u32,
+    transfer: Transfer3D,
+) -> VirtioGpuResult {
+    trace!("transfer_write ctx_id {ctx_id}, resource_id {resource_id}, {transfer:?}");
+
+    self.rutabaga
+        .transfer_write(ctx_id, resource_id, transfer)?;
+    Ok(OkNoData)
+}
+
+fn transfer_read(
+    &mut self,
+    ctx_id: u32,
+    resource_id: u32,
+    transfer: Transfer3D,
+    buf: Option<VolatileSlice>,
+) -> VirtioGpuResult {
+    let buf = buf.map(|vs| {
+        IoSliceMut::new(
+            // SAFETY: trivially safe
+            unsafe { std::slice::from_raw_parts_mut(vs.ptr_guard_mut().as_ptr(), vs.len()) },
+        )
+    });
+    self.rutabaga
+        .transfer_read(ctx_id, resource_id, transfer, buf)?;
+    Ok(OkNoData)
+}
+
+fn attach_backing(
+    &mut self,
+    resource_id: u32,
+    mem: &GuestMemoryMmap,
+    vecs: Vec<(GuestAddress, usize)>,
+) -> VirtioGpuResult {
+    let rutabaga_iovecs = sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?;
+    self.rutabaga.attach_backing(resource_id, rutabaga_iovecs)?;
+    Ok(OkNoData)
+}
+
+fn detach_backing(&mut self, resource_id: u32) -> VirtioGpuResult {
+    self.rutabaga.detach_backing(resource_id)?;
+    Ok(OkNoData)
+}
+
+fn update_cursor(
+    &mut self,
+    resource_id: u32,
+    cursor_pos: VhostUserGpuCursorPos,
+    hot_x: u32,
+    hot_y: u32,
+) -> VirtioGpuResult {
+    const CURSOR_WIDTH: u32 = 64;
+    const CURSOR_HEIGHT: u32 = 64;
+
+    let mut data = Box::new(
+        [0; READ_RESOURCE_BYTES_PER_PIXEL * CURSOR_WIDTH as usize * CURSOR_HEIGHT as usize],
+    );
+
+    let cursor_resource = self
+        .resources
+        .get(&resource_id)
+        .ok_or(ErrInvalidResourceId)?;
+
+    if cursor_resource.width != CURSOR_WIDTH || cursor_resource.height != CURSOR_HEIGHT {
+        error!("Cursor resource has invalid dimensions");
+        return Err(ErrInvalidParameter);
     }
 
-    fn transfer_read(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        transfer: Transfer3D,
-        buf: Option<VolatileSlice>,
-    ) -> VirtioGpuResult {
-        let buf = buf.map(|vs| {
-            IoSliceMut::new(
-                // SAFETY: trivially safe
-                unsafe { std::slice::from_raw_parts_mut(vs.ptr_guard_mut().as_ptr(), vs.len()) },
-            )
+    self.read_2d_resource(*cursor_resource, &mut data[..])
+        .map_err(|e| {
+            error!("Failed to read resource of cursor: {e}");
+            ErrUnspec
+        })?;
+
+    let cursor_update = VhostUserGpuCursorUpdate {
+        pos: cursor_pos,
+        hot_x,
+        hot_y,
+    };
+
+    self.gpu_backend
+        .cursor_update(&cursor_update, &data)
+        .map_err(|e| {
+            error!("Failed to update cursor pos from frontend: {}", e);
+            ErrUnspec
+        })?;
+
+    Ok(OkNoData)
+}
+
+fn move_cursor(&mut self, resource_id: u32, cursor: VhostUserGpuCursorPos) -> VirtioGpuResult {
+    if resource_id == 0 {
+        self.gpu_backend.cursor_pos_hide(&cursor).map_err(|e| {
+            error!("Failed to set cursor pos from frontend: {}", e);
+            ErrUnspec
+        })?;
+    } else {
+        self.gpu_backend.cursor_pos(&cursor).map_err(|e| {
+            error!("Failed to set cursor pos from frontend: {}", e);
+            ErrUnspec
+        })?;
+    }
+
+    Ok(OkNoData)
+}
+
+fn resource_assign_uuid(&self, resource_id: u32) -> VirtioGpuResult {
+    if !self.resources.contains_key(&resource_id) {
+        return Err(ErrInvalidResourceId);
+    }
+
+    // TODO(stevensd): use real uuids once the virtio wayland protocol is updated to
+    // handle more than 32 bits. For now, the virtwl driver knows that the uuid is
+    // actually just the resource id.
+    let mut uuid: [u8; 16] = [0; 16];
+    for (idx, byte) in resource_id.to_be_bytes().iter().enumerate() {
+        uuid[12 + idx] = *byte;
+    }
+    Ok(OkResourceUuid { uuid })
+}
+
+fn get_capset_info(&self, index: u32) -> VirtioGpuResult {
+    let (capset_id, version, size) = self.rutabaga.get_capset_info(index)?;
+    Ok(OkCapsetInfo {
+        capset_id,
+        version,
+        size,
+    })
+}
+
+fn get_capset(&self, capset_id: u32, version: u32) -> VirtioGpuResult {
+    let capset = self.rutabaga.get_capset(capset_id, version)?;
+    Ok(OkCapset(capset))
+}
+
+fn create_context(
+    &mut self,
+    ctx_id: u32,
+    context_init: u32,
+    context_name: Option<&str>,
+) -> VirtioGpuResult {
+    self.rutabaga
+        .create_context(ctx_id, context_init, context_name)?;
+    Ok(OkNoData)
+}
+
+fn destroy_context(&mut self, ctx_id: u32) -> VirtioGpuResult {
+    self.rutabaga.destroy_context(ctx_id)?;
+    Ok(OkNoData)
+}
+
+fn context_attach_resource(&mut self, ctx_id: u32, resource_id: u32) -> VirtioGpuResult {
+    self.rutabaga.context_attach_resource(ctx_id, resource_id)?;
+    Ok(OkNoData)
+}
+
+fn context_detach_resource(&mut self, ctx_id: u32, resource_id: u32) -> VirtioGpuResult {
+    self.rutabaga.context_detach_resource(ctx_id, resource_id)?;
+    Ok(OkNoData)
+}
+
+fn submit_command(
+    &mut self,
+    ctx_id: u32,
+    commands: &mut [u8],
+    fence_ids: &[u64],
+) -> VirtioGpuResult {
+    self.rutabaga.submit_command(ctx_id, commands, fence_ids)?;
+    Ok(OkNoData)
+}
+
+fn create_fence(&mut self, rutabaga_fence: RutabagaFence) -> VirtioGpuResult {
+    self.rutabaga.create_fence(rutabaga_fence)?;
+    Ok(OkNoData)
+}
+
+fn process_fence(
+    &mut self,
+    ring: VirtioGpuRing,
+    fence_id: u64,
+    desc_index: u16,
+    len: u32,
+) -> bool {
+    // In case the fence is signaled immediately after creation, don't add a return
+    // FenceDescriptor.
+    let mut fence_state = self.fence_state.lock().unwrap();
+    if fence_id > *fence_state.completed_fences.get(&ring).unwrap_or(&0) {
+        fence_state.descs.push(FenceDescriptor {
+            ring,
+            fence_id,
+            desc_index,
+            len,
         });
-        self.rutabaga
-            .transfer_read(ctx_id, resource_id, transfer, buf)?;
-        Ok(OkNoData)
+
+        false
+    } else {
+        true
+    }
+}
+
+fn resource_create_blob(
+    &mut self,
+    ctx_id: u32,
+    resource_id: u32,
+    mut resource_create_blob: ResourceCreateBlob,
+    vecs: Vec<(GuestAddress, usize)>,
+    mem: &GuestMemoryMmap,
+) -> VirtioGpuResult {
+    let mut rutabaga_iovecs = None;
+
+    if resource_create_blob.blob_flags & VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE != 0 {
+        panic!("GUEST_HANDLE unimplemented");
+    } else if resource_create_blob.blob_mem != VIRTIO_GPU_BLOB_MEM_HOST3D {
+        rutabaga_iovecs =
+            Some(sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?);
     }
 
-    fn attach_backing(
-        &mut self,
-        resource_id: u32,
-        mem: &GuestMemoryMmap,
-        vecs: Vec<(GuestAddress, usize)>,
-    ) -> VirtioGpuResult {
-        let rutabaga_iovecs = sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?;
-        self.rutabaga.attach_backing(resource_id, rutabaga_iovecs)?;
-        Ok(OkNoData)
-    }
 
-    fn detach_backing(&mut self, resource_id: u32) -> VirtioGpuResult {
-        self.rutabaga.detach_backing(resource_id)?;
-        Ok(OkNoData)
-    }
+    resource_create_blob.blob_flags |= RUTABAGA_BLOB_FLAG_USE_SHAREABLE | RUTABAGA_BLOB_FLAG_USE_CROSS_DEVICE;
 
-    fn update_cursor(
-        &mut self,
-        resource_id: u32,
-        cursor_pos: VhostUserGpuCursorPos,
-        hot_x: u32,
-        hot_y: u32,
-    ) -> VirtioGpuResult {
-        const CURSOR_WIDTH: u32 = 64;
-        const CURSOR_HEIGHT: u32 = 64;
+    self.rutabaga.resource_create_blob(
+        ctx_id,
+        resource_id,
+        resource_create_blob,
+        rutabaga_iovecs,
+        None,
+    )?;
 
-        let mut data = Box::new(
-            [0; READ_RESOURCE_BYTES_PER_PIXEL * CURSOR_WIDTH as usize * CURSOR_HEIGHT as usize],
-        );
+    let resource = VirtioGpuResource::new_blob(resource_id, resource_create_blob.size);
 
-        let cursor_resource = self
-            .resources
-            .get(&resource_id)
-            .ok_or(ErrInvalidResourceId)?;
+    debug_assert!(
+        !self.resources.contains_key(&resource_id),
+        "Resource ID {} already exists in the resources map.",
+        resource_id
+    );
 
-        if cursor_resource.width != CURSOR_WIDTH || cursor_resource.height != CURSOR_HEIGHT {
-            error!("Cursor resource has invalid dimensions");
-            return Err(ErrInvalidParameter);
-        }
+    // Rely on rutabaga to check for duplicate resource ids.
+    self.resources.insert(resource_id, resource);
+    Ok(self.result_from_query(resource_id))
+}
 
-        self.read_2d_resource(*cursor_resource, &mut data[..])
-            .map_err(|e| {
-                error!("Failed to read resource of cursor: {e}");
-                ErrUnspec
-            })?;
+fn resource_map_blob(&mut self, resource_id: u32, offset: u64) -> VirtioGpuResult {
+    let resource = self
+        .resources
+        .get_mut(&resource_id)
+        .ok_or(ErrInvalidResourceId)?;
 
-        let cursor_update = VhostUserGpuCursorUpdate {
-            pos: cursor_pos,
-            hot_x,
-            hot_y,
-        };
-
-        self.gpu_backend
-            .cursor_update(&cursor_update, &data)
-            .map_err(|e| {
-                error!("Failed to update cursor pos from frontend: {}", e);
-                ErrUnspec
-            })?;
-
-        Ok(OkNoData)
-    }
-
-    fn move_cursor(&mut self, resource_id: u32, cursor: VhostUserGpuCursorPos) -> VirtioGpuResult {
-        if resource_id == 0 {
-            self.gpu_backend.cursor_pos_hide(&cursor).map_err(|e| {
-                error!("Failed to set cursor pos from frontend: {}", e);
-                ErrUnspec
-            })?;
-        } else {
-            self.gpu_backend.cursor_pos(&cursor).map_err(|e| {
-                error!("Failed to set cursor pos from frontend: {}", e);
-                ErrUnspec
-            })?;
-        }
-
-        Ok(OkNoData)
-    }
-
-    fn resource_assign_uuid(&self, resource_id: u32) -> VirtioGpuResult {
-        if !self.resources.contains_key(&resource_id) {
-            return Err(ErrInvalidResourceId);
-        }
-
-        // TODO(stevensd): use real uuids once the virtio wayland protocol is updated to
-        // handle more than 32 bits. For now, the virtwl driver knows that the uuid is
-        // actually just the resource id.
-        let mut uuid: [u8; 16] = [0; 16];
-        for (idx, byte) in resource_id.to_be_bytes().iter().enumerate() {
-            uuid[12 + idx] = *byte;
-        }
-        Ok(OkResourceUuid { uuid })
-    }
-
-    fn get_capset_info(&self, index: u32) -> VirtioGpuResult {
-        let (capset_id, version, size) = self.rutabaga.get_capset_info(index)?;
-        Ok(OkCapsetInfo {
-            capset_id,
-            version,
-            size,
-        })
-    }
-
-    fn get_capset(&self, capset_id: u32, version: u32) -> VirtioGpuResult {
-        let capset = self.rutabaga.get_capset(capset_id, version)?;
-        Ok(OkCapset(capset))
-    }
-
-    fn create_context(
-        &mut self,
-        ctx_id: u32,
-        context_init: u32,
-        context_name: Option<&str>,
-    ) -> VirtioGpuResult {
-        self.rutabaga
-            .create_context(ctx_id, context_init, context_name)?;
-        Ok(OkNoData)
-    }
-
-    fn destroy_context(&mut self, ctx_id: u32) -> VirtioGpuResult {
-        self.rutabaga.destroy_context(ctx_id)?;
-        Ok(OkNoData)
-    }
-
-    fn context_attach_resource(&mut self, ctx_id: u32, resource_id: u32) -> VirtioGpuResult {
-        self.rutabaga.context_attach_resource(ctx_id, resource_id)?;
-        Ok(OkNoData)
-    }
-
-    fn context_detach_resource(&mut self, ctx_id: u32, resource_id: u32) -> VirtioGpuResult {
-        self.rutabaga.context_detach_resource(ctx_id, resource_id)?;
-        Ok(OkNoData)
-    }
-
-    fn submit_command(
-        &mut self,
-        ctx_id: u32,
-        commands: &mut [u8],
-        fence_ids: &[u64],
-    ) -> VirtioGpuResult {
-        self.rutabaga.submit_command(ctx_id, commands, fence_ids)?;
-        Ok(OkNoData)
-    }
-
-    fn create_fence(&mut self, rutabaga_fence: RutabagaFence) -> VirtioGpuResult {
-        self.rutabaga.create_fence(rutabaga_fence)?;
-        Ok(OkNoData)
-    }
-
-    fn process_fence(
-        &mut self,
-        ring: VirtioGpuRing,
-        fence_id: u64,
-        desc_index: u16,
-        len: u32,
-    ) -> bool {
-        // In case the fence is signaled immediately after creation, don't add a return
-        // FenceDescriptor.
-        let mut fence_state = self.fence_state.lock().unwrap();
-        if fence_id > *fence_state.completed_fences.get(&ring).unwrap_or(&0) {
-            fence_state.descs.push(FenceDescriptor {
-                ring,
-                fence_id,
-                desc_index,
-                len,
-            });
-
-            false
-        } else {
-            true
-        }
-    }
-
-    fn resource_create_blob(
-        &mut self,
-        ctx_id: u32,
-        resource_id: u32,
-        resource_create_blob: ResourceCreateBlob,
-        vecs: Vec<(GuestAddress, usize)>,
-        mem: &GuestMemoryMmap,
-    ) -> VirtioGpuResult {
-        let mut rutabaga_iovecs = None;
-
-        if resource_create_blob.blob_flags & VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE != 0 {
-            panic!("GUEST_HANDLE unimplemented");
-        } else if resource_create_blob.blob_mem != VIRTIO_GPU_BLOB_MEM_HOST3D {
-            rutabaga_iovecs =
-                Some(sglist_to_rutabaga_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?);
-        }
-
-        self.rutabaga.resource_create_blob(
-            ctx_id,
-            resource_id,
-            resource_create_blob,
-            rutabaga_iovecs,
-            None,
-        )?;
-
-        let resource = VirtioGpuResource::new_blob(resource_id, resource_create_blob.size);
-
-        debug_assert!(
-            !self.resources.contains_key(&resource_id),
-            "Resource ID {} already exists in the resources map.",
-            resource_id
-        );
-
-        // Rely on rutabaga to check for duplicate resource ids.
-        self.resources.insert(resource_id, resource);
-        Ok(self.result_from_query(resource_id))
-    }
-
-    fn resource_map_blob(
-        &mut self,
-        resource_id: u32,
-        offset: u64,
-    ) -> VirtioGpuResult {
-        let resource = self
-            .resources
-            .get_mut(&resource_id)
-            .ok_or(ErrInvalidResourceId)?;
-
-        let map_info = self.rutabaga.map_info(resource_id).map_err(|_| ErrUnspec)?;
-        if let Ok(export) = self.rutabaga.export_blob(resource_id) {
-            if export.handle_type != RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD {
-
-                trace!(
+    let map_info = self.rutabaga.map_info(resource_id).map_err(|_| ErrUnspec)?;
+    if let Ok(export) = self.rutabaga.export_blob(resource_id) {
+        if export.handle_type != RUTABAGA_MEM_HANDLE_TYPE_OPAQUE_FD {
+            trace!(
                     "Mapping blob resource_id={resource_id} offset={offset} resource.size={sz}",
                     sz = resource.blob_size
                 );
 
-                let flags = match map_info & RUTABAGA_MAP_ACCESS_MASK {
-                    rutabaga_gfx::RUTABAGA_MAP_ACCESS_READ => VhostUserMMapFlags::MAP_R,
-                    rutabaga_gfx::RUTABAGA_MAP_ACCESS_WRITE => VhostUserMMapFlags::MAP_W,
-                    rutabaga_gfx::RUTABAGA_MAP_ACCESS_RW => {
-                        VhostUserMMapFlags::MAP_R | VhostUserMMapFlags::MAP_W
-                    }
-                    _ => return Err(ErrUnspec),
-                };
+            let flags = match map_info & RUTABAGA_MAP_ACCESS_MASK {
+                rutabaga_gfx::RUTABAGA_MAP_ACCESS_READ => VhostUserMMapFlags::MAP_R,
+                rutabaga_gfx::RUTABAGA_MAP_ACCESS_WRITE => VhostUserMMapFlags::MAP_W,
+                rutabaga_gfx::RUTABAGA_MAP_ACCESS_RW => {
+                    VhostUserMMapFlags::MAP_R | VhostUserMMapFlags::MAP_W
+                }
+                _ => return Err(ErrUnspec),
+            };
 
-                let map_request = VhostUserMMap {
-                    shmid: 0,
-                    padding: Default::default(),
-                    fd_offset: 0,
-                    shm_offset: offset,
-                    len: resource.blob_size,
-                    flags: flags.bits(),
-                };
+            let map_request = VhostUserMMap {
+                shmid: 0,
+                padding: Default::default(),
+                fd_offset: 0,
+                shm_offset: offset,
+                len: resource.blob_size,
+                flags: flags.bits(),
+            };
 
-                self.backend
-                    .shmem_map(&map_request, &export.os_handle)
-                    .expect("Failed to mmap by frontend");
+            self.backend
+                .shmem_map(&map_request, &export.os_handle)
+                .expect("Failed to mmap by frontend");
 
-                resource.blob_shmem_offset = Some(offset);
-            } else {
-                return Err(ErrUnspec);
-            }
+            resource.blob_shmem_offset = Some(offset);
         } else {
             return Err(ErrUnspec);
         }
-
-        // Access flags not a part of the virtio-gpu spec.
-        Ok(OkMapInfo {
-            map_info: map_info & RUTABAGA_MAP_CACHE_MASK,
-        })
+    } else {
+        return Err(ErrUnspec);
     }
 
-    fn resource_unmap_blob(
-        &mut self,
-        resource_id: u32,
-    ) -> VirtioGpuResult {
-        let resource = self
-            .resources
-            .get_mut(&resource_id)
-            .ok_or(ErrInvalidResourceId)?;
+    // Access flags not a part of the virtio-gpu spec.
+    Ok(OkMapInfo {
+        map_info: map_info & RUTABAGA_MAP_CACHE_MASK,
+    })
+}
 
-        let Some(offset) = resource.blob_shmem_offset else {
-            log::warn!("Guest tried to unmap blob resource with resource_id={resource_id}, but it is not mapped!");
-            return Err(ErrInvalidParameter);
-        };
+fn resource_unmap_blob(&mut self, resource_id: u32) -> VirtioGpuResult {
+    let resource = self
+        .resources
+        .get_mut(&resource_id)
+        .ok_or(ErrInvalidResourceId)?;
 
-        let unmap_request = VhostUserMMap {
-            shmid: 0,
-            padding: Default::default(),
-            fd_offset: 0,
-            shm_offset: offset,
-            len: resource.blob_size,
-            flags: 0
-        };
+    let Some(offset) = resource.blob_shmem_offset else {
+        log::warn!("Guest tried to unmap blob resource with resource_id={resource_id}, but it is not mapped!");
+        return Err(ErrInvalidParameter);
+    };
 
-        self.backend
-            .shmem_unmap(&unmap_request)
-            .expect("Failed to unmap by fronted");
+    let unmap_request = VhostUserMMap {
+        shmid: 0,
+        padding: Default::default(),
+        fd_offset: 0,
+        shm_offset: offset,
+        len: resource.blob_size,
+        flags: 0,
+    };
 
-        resource.blob_shmem_offset = None;
+    self.backend
+        .shmem_unmap(&unmap_request)
+        .expect("Failed to unmap by fronted");
 
-        Ok(OkNoData)
-    }
+    resource.blob_shmem_offset = None;
 
-    fn get_event_poll_fd(&self) -> Option<EventFd> {
-        self.rutabaga.poll_descriptor().map(|fd| {
-            // SAFETY: Safe, the fd should be valid, because Rutabaga guarantees it.
-            // into_raw_descriptor() returns a RawFd and makes sure SafeDescriptor::drop doesn't run.
-            unsafe { EventFd::from_raw_fd(fd.into_raw_descriptor()) }
-        })
-    }
+    Ok(OkNoData)
+}
 
-    fn event_poll(&self) {
-        self.rutabaga.event_poll()
-    }
+fn get_event_poll_fd(&self) -> Option<EventFd> {
+    self.rutabaga.poll_descriptor().map(|fd| {
+        // SAFETY: Safe, the fd should be valid, because Rutabaga guarantees it.
+        // into_raw_descriptor() returns a RawFd and makes sure SafeDescriptor::drop doesn't run.
+        unsafe { EventFd::from_raw_fd(fd.into_raw_descriptor()) }
+    })
+}
+
+fn event_poll(&self) {
+    self.rutabaga.event_poll()
+}
 }
 
 #[cfg(test)]

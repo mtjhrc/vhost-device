@@ -647,6 +647,7 @@ impl VhostUserBackend for VhostUserGpuBackend {
             | 1 << VIRTIO_GPU_F_EDID
             | 1 << VIRTIO_GPU_F_RESOURCE_BLOB
             | 1 << VIRTIO_GPU_F_CONTEXT_INIT
+            | 1 << 6 // TODO: does android need this VIRTIO_GPU_F_CREATE_GUEST_HANDLE ? (Android/crosvm extension)
             | VhostUserVirtioFeatures::PROTOCOL_FEATURES.bits()
     }
 
