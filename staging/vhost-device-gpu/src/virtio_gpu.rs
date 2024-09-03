@@ -409,6 +409,7 @@ impl RutabagaVirtioGpu {
             .set_use_gles(true)
             .set_use_glx(true)
             .set_use_surfaceless(true)
+            .set_use_vulkan(true)
             .set_use_external_blob(true);
 
         let fence_state = Arc::new(Mutex::new(Default::default()));
