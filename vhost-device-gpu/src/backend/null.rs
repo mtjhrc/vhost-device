@@ -229,6 +229,8 @@ impl Renderer for NullAdapter {
         _size: u64,
         _blob_mem: u32,
         _blob_flags: u32,
+        _vecs: Vec<(vm_memory::GuestAddress, usize)>,
+        _mem: &vm_memory::GuestMemoryMmap,
     ) -> VirtioGpuResult {
         trace!("NullAdapter::resource_create_blob - no-op");
         Ok(GpuResponse::OkNoData)

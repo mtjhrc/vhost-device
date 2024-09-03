@@ -257,18 +257,25 @@ impl VhostUserGpuBackendInner {
                 fence_ids,
                 mut cmd_data,
             } => renderer.submit_command(hdr.ctx_id.into(), &mut cmd_data, &fence_ids),
-            GpuCommand::ResourceCreateBlob(_) => {
-                panic!("virtio_gpu: GpuCommand::ResourceCreateBlob unimplemented")
-            }
+            GpuCommand::ResourceCreateBlob(info, vecs) => renderer.resource_create_blob(
+                hdr.ctx_id.into(),
+                info.resource_id.into(),
+                info.blob_id.into(),
+                info.size.into(),
+                info.blob_mem.into(),
+                info.blob_flags.into(),
+                vecs,
+                mem,
+            ),
 
             GpuCommand::SetScanoutBlob(_) => {
                 panic!("virtio_gpu: GpuCommand::SetScanoutBlob unimplemented")
             }
-            GpuCommand::ResourceMapBlob(_) => {
-                panic!("virtio_gpu: GpuCommand::ResourceMapBlob unimplemented")
+            GpuCommand::ResourceMapBlob(info) => {
+                renderer.resource_map_blob(info.resource_id.into(), info.offset.into())
             }
-            GpuCommand::ResourceUnmapBlob(_) => {
-                panic!("virtio_gpu: GpuCommand::ResourceUnmapBlob unimplemented")
+            GpuCommand::ResourceUnmapBlob(info) => {
+                renderer.resource_unmap_blob(info.resource_id.into())
             }
         }
     }

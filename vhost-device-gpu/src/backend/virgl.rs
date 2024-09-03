@@ -58,6 +58,8 @@ pub struct GpuResource {
     // resource. Resource could be used for multiple scanouts.
     pub scanouts: AssociatedScanouts,
     pub backing_iovecs: Arc<Mutex<Option<Vec<Iovec>>>>,
+    pub blob_size: u64,
+    pub blob_shmem_offset: Option<u64>,
 }
 
 fn sglist_to_iovecs(
@@ -184,6 +186,8 @@ impl Renderer for VirglRendererAdapter {
             virgl_resource,
             scanouts: AssociatedScanouts::default(),
             backing_iovecs: Arc::new(Mutex::new(None)),
+            blob_size: 0,
+            blob_shmem_offset: None,
         };
         self.resources.insert(resource_id, local_resource);
         Ok(OkNoData)
@@ -618,8 +622,10 @@ impl Renderer for VirglRendererAdapter {
         _size: u64,
         _blob_mem: u32,
         _blob_flags: u32,
+        _vecs: Vec<(GuestAddress, usize)>,
+        _mem: &GuestMemoryMmap,
     ) -> VirtioGpuResult {
-        error!("Not implemented: resource_create_blob");
+        error!("Not implemented: resource_create_blob for VirglRenderer");
         Err(ErrUnspec)
     }
 

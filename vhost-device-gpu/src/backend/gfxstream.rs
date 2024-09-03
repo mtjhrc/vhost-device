@@ -659,8 +659,10 @@ impl Renderer for GfxstreamAdapter {
         _size: u64,
         _blob_mem: u32,
         _blob_flags: u32,
+        _vecs: Vec<(vm_memory::GuestAddress, usize)>,
+        _mem: &vm_memory::GuestMemoryMmap,
     ) -> VirtioGpuResult {
-        error!("Not implemented: resource_create_blob");
+        error!("Not implemented: resource_create_blob for Gfxstream");
         Err(ErrUnspec)
     }
 

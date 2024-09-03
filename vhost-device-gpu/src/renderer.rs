@@ -96,6 +96,8 @@ pub trait Renderer: Send + Sync {
         size: u64,
         blob_mem: u32,
         blob_flags: u32,
+        vecs: Vec<(vm_memory::GuestAddress, usize)>,
+        mem: &vm_memory::GuestMemoryMmap,
     ) -> VirtioGpuResult;
     fn resource_map_blob(&mut self, resource_id: u32, offset: u64) -> VirtioGpuResult;
     fn resource_unmap_blob(&mut self, resource_id: u32) -> VirtioGpuResult;
