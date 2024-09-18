@@ -409,6 +409,7 @@ impl RutabagaVirtioGpu {
             .set_use_gles(true)
             .set_use_glx(true)
             .set_use_surfaceless(true)
+            .set_use_render_server(true)
             .set_use_vulkan(true)
             .set_use_external_blob(true);
 
