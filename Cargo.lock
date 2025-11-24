@@ -2316,8 +2316,6 @@ dependencies = [
 [[package]]
 name = "virglrenderer"
 version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "14b3ceb5f84adcbd531661a6c6c0883c3d6cd83427886d3179675b19268f4450"
 dependencies = [
  "libc 1.0.0-alpha.1",
  "log",
