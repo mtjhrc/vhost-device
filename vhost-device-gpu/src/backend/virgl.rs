@@ -23,7 +23,7 @@ use vhost::vhost_user::{
 };
 use vhost_user_backend::{VringRwLock, VringT};
 use virglrenderer::{
-    FenceHandler, Iovec, VirglContext, VirglRenderer, VirglRendererFlags, VirglResource,
+    FenceHandler, Iovec, VirglRenderer, VirglRendererFlags, VirglResource,
     VIRGL_HANDLE_TYPE_MEM_DMABUF,
 };
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
@@ -139,15 +139,17 @@ pub struct VirglRendererAdapter {
     gpu_backend: GpuBackend,
     fence_state: Arc<Mutex<FenceState>>,
     resources: BTreeMap<u32, GpuResource>,
-    contexts: BTreeMap<u32, VirglContext>,
     scanouts: [Option<VirtioGpuScanout>; VIRTIO_GPU_MAX_SCANOUTS as usize],
 }
 
 impl VirglRendererAdapter {
     pub fn new(queue_ctl: &VringRwLock, config: &GpuConfig, gpu_backend: GpuBackend) -> Self {
+        let venus_enabled = config.capsets().contains(crate::GpuCapset::VENUS);
+        assert!(venus_enabled);
         let virglrenderer_flags = VirglRendererFlags::new()
             .use_virgl(true)
-            .use_venus(true)
+            .use_venus(venus_enabled)
+            .use_render_server(venus_enabled)
             .use_egl(config.flags().use_egl)
             .use_gles(config.flags().use_gles)
             .use_glx(config.flags().use_glx)
@@ -168,7 +170,6 @@ impl VirglRendererAdapter {
             gpu_backend,
             fence_state,
             resources: BTreeMap::new(),
-            contexts: BTreeMap::new(),
             scanouts: Default::default(),
         }
     }
@@ -328,15 +329,15 @@ impl Renderer for VirglRendererAdapter {
         let capset_id = match index {
             0 => CAPSET_ID_VIRGL,
             1 => CAPSET_ID_VIRGL2,
-            3 => CAPSET_ID_VENUS,
+            2 => CAPSET_ID_VENUS,
             _ => return Err(ErrInvalidParameter),
         };
         let (version, size) = self.renderer.get_capset_info(index);
-        Ok(OkCapsetInfo {
+        Ok(dbg!(OkCapsetInfo {
             capset_id,
             version,
             size,
-        })
+        }))
     }
 
     fn get_capset(&self, capset_id: u32, version: u32) -> VirtioGpuResult {
@@ -350,41 +351,37 @@ impl Renderer for VirglRendererAdapter {
         context_init: u32,
         context_name: Option<&str>,
     ) -> VirtioGpuResult {
-        if self.contexts.contains_key(&ctx_id) {
-            return Err(ErrUnspec);
-        }
+        trace!("Creating context ctx_id={ctx_id}, '{context_name:?}', context_init={context_init}");
 
-        // Create the VirglContext using virglrenderer
-        let ctx = virglrenderer::VirglContext::create_context(ctx_id, context_init, context_name)
+        // Create the context using virglrenderer (contexts are now managed internally)
+        VirglRenderer::create_context(ctx_id, context_init, context_name)
             .map_err(|_| ErrInvalidContextId)?;
 
-        // Insert the newly created context into our local BTreeMap.
-        self.contexts.insert(ctx_id, ctx);
         Ok(OkNoData)
     }
 
     fn destroy_context(&mut self, ctx_id: u32) -> VirtioGpuResult {
-        self.contexts.remove(&ctx_id).ok_or(ErrInvalidContextId)?;
+        self.renderer.destroy_context(ctx_id);
         Ok(OkNoData)
     }
 
     fn context_attach_resource(&mut self, ctx_id: u32, resource_id: u32) -> VirtioGpuResult {
-        let ctx = self.contexts.get_mut(&ctx_id).ok_or(ErrInvalidContextId)?;
         let resource = self
             .resources
             .get_mut(&resource_id)
             .ok_or(ErrInvalidResourceId)?;
-        ctx.attach(&mut resource.virgl_resource);
+        self.renderer
+            .context_attach_attach(ctx_id, &mut resource.virgl_resource);
         Ok(OkNoData)
     }
 
     fn context_detach_resource(&mut self, ctx_id: u32, resource_id: u32) -> VirtioGpuResult {
-        let ctx = self.contexts.get_mut(&ctx_id).ok_or(ErrInvalidContextId)?;
         let resource = self
             .resources
-            .get_mut(&resource_id)
+            .get(&resource_id)
             .ok_or(ErrInvalidResourceId)?;
-        ctx.detach(&resource.virgl_resource);
+        self.renderer
+            .context_detach_resoruce(ctx_id, &resource.virgl_resource);
         Ok(OkNoData)
     }
 
@@ -394,9 +391,8 @@ impl Renderer for VirglRendererAdapter {
         commands: &mut [u8],
         fence_ids: &[u64],
     ) -> VirtioGpuResult {
-        let ctx = self.contexts.get_mut(&ctx_id).ok_or(ErrInvalidContextId)?;
-
-        ctx.submit_cmd(commands, fence_ids)
+        self.renderer
+            .submit_cmd(ctx_id, commands, fence_ids)
             .map(|()| OkNoData)
             .map_err(|_| ErrUnspec)
     }

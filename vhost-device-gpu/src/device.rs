@@ -234,7 +234,9 @@ impl VhostUserGpuBackendInner {
             GpuCommand::ResourceAssignUuid(_) => {
                 panic!("virtio_gpu: GpuCommand::ResourceAssignUuid unimplemented")
             }
-            GpuCommand::GetCapsetInfo(req) => renderer.get_capset_info(req.capset_index.into()),
+            GpuCommand::GetCapsetInfo(req) => {
+                dbg!(renderer.get_capset_info(req.capset_index.into()))
+            },
             GpuCommand::GetCapset(req) => {
                 renderer.get_capset(req.capset_id.into(), req.capset_version.into())
             }
@@ -356,9 +358,9 @@ impl VhostUserGpuBackendInner {
     ) -> VirtioGpuResult {
         let context_name: Option<String> = Some(req.get_debug_name());
         renderer.create_context(
-            hdr.ctx_id.into(),
+            dbg!(hdr.ctx_id.into()),
             req.context_init.into(),
-            context_name.as_deref(),
+            dbg!(context_name.as_deref()),
         )
     }
 
