@@ -19,27 +19,33 @@ use vhost::vhost_user::{
         VhostUserGpuCursorPos, VhostUserGpuDMABUFScanout, VhostUserGpuDMABUFScanout2,
         VhostUserGpuEdidRequest, VhostUserGpuUpdate,
     },
-    GpuBackend,
+    message::VhostUserMMapFlags,
+    Backend, GpuBackend,
 };
 use vhost_user_backend::{VringRwLock, VringT};
 use virglrenderer::{
-    FenceHandler, Iovec, VirglRenderer, VirglRendererFlags, VirglResource,
-    VIRGL_HANDLE_TYPE_MEM_DMABUF,
+    FenceHandler, Iovec, ResourceCreateBlob, VirglRenderer, VirglRendererFlags, VirglResource,
+    VIRGL_HANDLE_TYPE_MEM_DMABUF, VIRGL_HANDLE_TYPE_MEM_OPAQUE_FD, VIRGL_MAP_ACCESS_MASK,
+    VIRGL_MAP_ACCESS_READ, VIRGL_MAP_ACCESS_RW, VIRGL_MAP_ACCESS_WRITE, VIRGL_MAP_CACHE_MASK,
 };
+use virtio_bindings::virtio_gpu::VIRTIO_GPU_BLOB_MEM_HOST3D;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
 use vmm_sys_util::eventfd::EventFd;
 
 use crate::{
     backend::{
         common,
-        common::{common_set_scanout_disable, AssociatedScanouts, CursorConfig, VirtioGpuScanout},
+        common::{
+            common_map_blob, common_set_scanout_disable, common_unmap_blob, AssociatedScanouts,
+            CursorConfig, VirtioGpuScanout,
+        },
     },
     gpu_types::{FenceState, ResourceCreate3d, Transfer3DDesc, VirtioGpuRing},
     protocol::{
         virtio_gpu_rect, GpuResponse,
         GpuResponse::{
             ErrInvalidContextId, ErrInvalidParameter, ErrInvalidResourceId, ErrInvalidScanoutId,
-            ErrUnspec, OkCapset, OkCapsetInfo, OkNoData,
+            ErrUnspec, OkCapset, OkCapsetInfo, OkMapInfo, OkNoData,
         },
         VirtioGpuResult, VIRTIO_GPU_MAX_SCANOUTS,
     },
@@ -136,6 +142,7 @@ impl FenceHandler for VirglFenceHandler {
 
 pub struct VirglRendererAdapter {
     renderer: VirglRenderer,
+    backend: Backend,
     gpu_backend: GpuBackend,
     fence_state: Arc<Mutex<FenceState>>,
     resources: BTreeMap<u32, GpuResource>,
@@ -143,9 +150,14 @@ pub struct VirglRendererAdapter {
 }
 
 impl VirglRendererAdapter {
-    pub fn new(queue_ctl: &VringRwLock, config: &GpuConfig, gpu_backend: GpuBackend) -> Self {
+    pub fn new(
+        queue_ctl: &VringRwLock,
+        config: &GpuConfig,
+        backend: Backend,
+        gpu_backend: GpuBackend,
+    ) -> Self {
         let venus_enabled = config.capsets().contains(crate::GpuCapset::VENUS);
-        assert!(venus_enabled);
+
         let virglrenderer_flags = VirglRendererFlags::new()
             .use_virgl(true)
             .use_venus(venus_enabled)
@@ -155,7 +167,7 @@ impl VirglRendererAdapter {
             .use_glx(config.flags().use_glx)
             .use_surfaceless(config.flags().use_surfaceless)
             .use_external_blob(true)
-            .use_async_fence_cb(true)
+            .use_async_fence_cb(false)
             .use_thread_sync(true);
         let fence_state = Arc::new(Mutex::new(FenceState::default()));
         let fence_handler = Box::new(VirglFenceHandler::new(
@@ -167,6 +179,7 @@ impl VirglRendererAdapter {
             .expect("Failed to initialize virglrenderer");
         Self {
             renderer,
+            backend,
             gpu_backend,
             fence_state,
             resources: BTreeMap::new(),
@@ -612,27 +625,130 @@ impl Renderer for VirglRendererAdapter {
 
     fn resource_create_blob(
         &mut self,
-        _ctx_id: u32,
-        _resource_id: u32,
-        _blob_id: u64,
-        _size: u64,
-        _blob_mem: u32,
-        _blob_flags: u32,
-        _vecs: Vec<(GuestAddress, usize)>,
-        _mem: &GuestMemoryMmap,
+        ctx_id: u32,
+        resource_id: u32,
+        blob_id: u64,
+        size: u64,
+        blob_mem: u32,
+        blob_flags: u32,
+        vecs: Vec<(GuestAddress, usize)>,
+        mem: &GuestMemoryMmap,
     ) -> VirtioGpuResult {
-        error!("Not implemented: resource_create_blob for VirglRenderer");
-        Err(ErrUnspec)
+        let mut virgl_iovecs = None;
+
+        if blob_flags & crate::protocol::VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE != 0 {
+            error!("GUEST_HANDLE unimplemented for virgl backend");
+            return Err(ErrUnspec);
+        } else if blob_mem != VIRTIO_GPU_BLOB_MEM_HOST3D {
+            virgl_iovecs = Some(sglist_to_iovecs(&vecs[..], mem).map_err(|_| ErrUnspec)?);
+        }
+
+        let resource_create_blob = ResourceCreateBlob {
+            blob_id,
+            blob_mem,
+            blob_flags,
+            size,
+        };
+
+        let virgl_resource = self
+            .renderer
+            .create_blob(
+                ctx_id,
+                0, // width
+                0, // height
+                resource_id,
+                resource_create_blob,
+                virgl_iovecs.as_deref(),
+            )
+            .map_err(|_| ErrUnspec)?;
+
+        let resource = GpuResource {
+            virgl_resource,
+            scanouts: AssociatedScanouts::default(),
+            backing_iovecs: Arc::new(Mutex::new(virgl_iovecs)),
+            blob_size: size,
+            blob_shmem_offset: None,
+        };
+
+        debug_assert!(
+            !self.resources.contains_key(&resource_id),
+            "Resource ID {resource_id} already exists in the resources map."
+        );
+
+        self.resources.insert(resource_id, resource);
+        Ok(OkNoData)
     }
 
-    fn resource_map_blob(&mut self, _resource_id: u32, _offset: u64) -> VirtioGpuResult {
-        error!("Not implemented: resource_map_blob");
-        Err(ErrUnspec)
+    fn resource_map_blob(&mut self, resource_id: u32, offset: u64) -> VirtioGpuResult {
+        let resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        let map_info = resource
+            .virgl_resource
+            .map_info
+            .ok_or(ErrUnspec)?;
+
+        let handle = resource
+            .virgl_resource
+            .handle
+            .as_ref()
+            .ok_or(ErrUnspec)?;
+
+        // Check handle type - we don't support OPAQUE_FD mapping
+        if handle.handle_type == VIRGL_HANDLE_TYPE_MEM_OPAQUE_FD {
+            error!("VIRGL_HANDLE_TYPE_MEM_OPAQUE_FD not supported for mapping");
+            return Err(ErrUnspec);
+        }
+
+        // Convert map_info access flags to VhostUserMMapFlags
+        let flags = match map_info & VIRGL_MAP_ACCESS_MASK {
+            VIRGL_MAP_ACCESS_READ => VhostUserMMapFlags::MAP_READ,
+            VIRGL_MAP_ACCESS_WRITE => VhostUserMMapFlags::MAP_READ_WRITE,
+            VIRGL_MAP_ACCESS_RW => VhostUserMMapFlags::MAP_READ_WRITE,
+            _ => {
+                error!("FIXME! Wrong access mask!");
+                VhostUserMMapFlags::MAP_READ_WRITE//return Err(ErrUnspec)
+            },
+        };
+
+        common_map_blob(
+            &self.backend,
+            flags,
+            &handle.os_handle.as_fd(),
+            resource.blob_size,
+            offset,
+            resource_id,
+        )?;
+
+        resource.blob_shmem_offset = Some(offset);
+
+        // Return cache flags only (access flags not part of virtio-gpu spec)
+        Ok(OkMapInfo {
+            map_info: map_info & VIRGL_MAP_CACHE_MASK,
+        })
     }
 
-    fn resource_unmap_blob(&mut self, _resource_id: u32) -> VirtioGpuResult {
-        error!("Not implemented: resource_unmap_blob");
-        Err(ErrUnspec)
+    fn resource_unmap_blob(&mut self, resource_id: u32) -> VirtioGpuResult {
+        let resource = self
+            .resources
+            .get_mut(&resource_id)
+            .ok_or(ErrInvalidResourceId)?;
+
+        let Some(offset) = resource.blob_shmem_offset else {
+            warn!(
+                "Guest tried to unmap blob resource with resource_id={resource_id}, but it is not \
+                 mapped!"
+            );
+            return Err(ErrInvalidParameter);
+        };
+
+        common_unmap_blob(&self.backend, resource.blob_size, offset)?;
+
+        resource.blob_shmem_offset = None;
+
+        Ok(OkNoData)
     }
 }
 

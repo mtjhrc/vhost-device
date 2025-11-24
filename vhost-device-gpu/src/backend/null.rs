@@ -27,6 +27,7 @@ impl NullAdapter {
     pub fn new(
         _queue_ctl: &vhost_user_backend::VringRwLock,
         _config: &GpuConfig,
+        _backend: vhost::vhost_user::Backend,
         gpu_backend: GpuBackend,
     ) -> Self {
         trace!("NullAdapter created");
@@ -258,15 +259,16 @@ mod tests {
     use crate::{GpuFlags, GpuMode};
 
     fn create_null_adapter() -> NullAdapter {
-        let (_, backend) = UnixStream::pair().unwrap();
-        let gpu_backend = GpuBackend::from_stream(backend);
+        let (stream1, stream2) = UnixStream::pair().unwrap();
+        let backend = vhost::vhost_user::Backend::from_stream(stream1);
+        let gpu_backend = GpuBackend::from_stream(stream2);
         let mem = GuestMemoryAtomic::new(
             GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap(),
         );
         let vring = VringRwLock::new(mem, 0x100).unwrap();
         let config = GpuConfig::new(GpuMode::Null, None, GpuFlags::default()).unwrap();
 
-        NullAdapter::new(&vring, &config, gpu_backend)
+        NullAdapter::new(&vring, &config, backend, gpu_backend)
     }
 
     #[test]

@@ -22,9 +22,10 @@ macro_rules! handle_adapter {
                 Some(renderer) => renderer,
                 None => {
                     // Pass $vrings to the call
-                    let (control_vring, gpu_backend) = $self.extract_backend_and_vring($vrings)?;
+                    let (control_vring, backend, gpu_backend) =
+                        $self.extract_backend_and_vring($vrings)?;
 
-                    let renderer = $new_adapter(control_vring, gpu_backend);
+                    let renderer = $new_adapter(control_vring, backend, gpu_backend);
 
                     event_poll_fd = renderer.get_event_poll_fd();
                     maybe_renderer.insert(renderer)
@@ -52,7 +53,7 @@ use thiserror::Error as ThisError;
 use vhost::vhost_user::{
     gpu_message::{VhostUserGpuCursorPos, VhostUserGpuEdidRequest},
     message::{VhostUserProtocolFeatures, VhostUserVirtioFeatures},
-    GpuBackend,
+    Backend, GpuBackend,
 };
 use vhost_user_backend::{VhostUserBackend, VringEpollHandler, VringRwLock, VringT};
 use virtio_bindings::{
@@ -140,6 +141,7 @@ impl From<Error> for io::Error {
 struct VhostUserGpuBackendInner {
     virtio_cfg: VirtioGpuConfig,
     event_idx_enabled: bool,
+    backend: Option<Backend>,
     gpu_backend: Option<GpuBackend>,
     exit_consumer: EventConsumer,
     exit_notifier: EventNotifier,
@@ -173,6 +175,7 @@ impl VhostUserGpuBackend {
                 num_capsets: Le32::from(gpu_config.capsets().num_capsets()),
             },
             event_idx_enabled: false,
+            backend: None,
             gpu_backend: None,
             exit_consumer,
             exit_notifier,
@@ -236,7 +239,7 @@ impl VhostUserGpuBackendInner {
             }
             GpuCommand::GetCapsetInfo(req) => {
                 dbg!(renderer.get_capset_info(req.capset_index.into()))
-            },
+            }
             GpuCommand::GetCapset(req) => {
                 renderer.get_capset(req.capset_id.into(), req.capset_version.into())
             }
@@ -601,13 +604,17 @@ impl VhostUserGpuBackendInner {
     fn extract_backend_and_vring<'a>(
         &mut self,
         vrings: &'a [VringRwLock],
-    ) -> IoResult<(&'a VringRwLock, GpuBackend)> {
+    ) -> IoResult<(&'a VringRwLock, Backend, GpuBackend)> {
         let control_vring = &vrings[CONTROL_QUEUE as usize];
         let backend = self
+            .backend
+            .take()
+            .ok_or_else(|| io::Error::other("set_backend_req_fd() not called, Backend missing"))?;
+        let gpu_backend = self
             .gpu_backend
             .take()
             .ok_or_else(|| io::Error::other("set_gpu_socket() not called, GpuBackend missing"))?;
-        Ok((control_vring, backend))
+        Ok((control_vring, backend, gpu_backend))
     }
 
     fn lazy_init_and_handle_event(
@@ -627,8 +634,8 @@ impl VhostUserGpuBackendInner {
             GpuMode::Gfxstream => handle_adapter!(
                 GfxstreamAdapter,
                 TLS_GFXSTREAM,
-                |control_vring, gpu_backend| {
-                    GfxstreamAdapter::new(control_vring, &self.gpu_config, gpu_backend)
+                |control_vring, backend, gpu_backend| {
+                    GfxstreamAdapter::new(control_vring, &self.gpu_config, backend, gpu_backend)
                 },
                 self,
                 device_event,
@@ -639,8 +646,8 @@ impl VhostUserGpuBackendInner {
             GpuMode::VirglRenderer => handle_adapter!(
                 VirglRendererAdapter,
                 TLS_VIRGL,
-                |control_vring, gpu_backend| {
-                    VirglRendererAdapter::new(control_vring, &self.gpu_config, gpu_backend)
+                |control_vring, backend, gpu_backend| {
+                    VirglRendererAdapter::new(control_vring, &self.gpu_config, backend, gpu_backend)
                 },
                 self,
                 device_event,
@@ -650,8 +657,8 @@ impl VhostUserGpuBackendInner {
             GpuMode::Null => handle_adapter!(
                 NullAdapter,
                 TLS_NULL,
-                |control_vring, gpu_backend| {
-                    NullAdapter::new(control_vring, &self.gpu_config, gpu_backend)
+                |control_vring, backend, gpu_backend| {
+                    NullAdapter::new(control_vring, &self.gpu_config, backend, gpu_backend)
                 },
                 self,
                 device_event,
@@ -704,7 +711,11 @@ impl VhostUserBackend for VhostUserGpuBackend {
 
     fn protocol_features(&self) -> VhostUserProtocolFeatures {
         debug!("Protocol features called");
-        VhostUserProtocolFeatures::CONFIG | VhostUserProtocolFeatures::MQ
+        VhostUserProtocolFeatures::CONFIG
+            | VhostUserProtocolFeatures::MQ
+            | VhostUserProtocolFeatures::BACKEND_REQ
+            | VhostUserProtocolFeatures::BACKEND_SEND_FD
+            | VhostUserProtocolFeatures::CONFIGURE_MEM_SLOTS
     }
 
     fn set_event_idx(&self, enabled: bool) {
@@ -721,6 +732,11 @@ impl VhostUserBackend for VhostUserGpuBackend {
     fn set_gpu_socket(&self, backend: GpuBackend) -> IoResult<()> {
         self.inner.lock().unwrap().gpu_backend = Some(backend);
         Ok(())
+    }
+
+    fn set_backend_req_fd(&self, backend: Backend) {
+        trace!("Got set_backend_req_fd");
+        self.inner.lock().unwrap().backend = Some(backend);
     }
 
     fn get_config(&self, offset: u32, size: u32) -> Vec<u8> {
@@ -753,7 +769,7 @@ impl VhostUserBackend for VhostUserGpuBackend {
                 Ok(h) => h,
                 Err(poisoned) => poisoned.into_inner(),
             })
-            .upgrade() else {
+                .upgrade() else {
                 return Err(
                     Error::EpollHandler("Failed to upgrade epoll handler".to_string()).into(),
                 );
@@ -909,7 +925,7 @@ mod tests {
             Some(GpuCapset::VIRGL | GpuCapset::VIRGL2),
             GpuFlags::default(),
         )
-        .unwrap();
+            .unwrap();
         let backend = VhostUserGpuBackend::new(config).unwrap();
         let mem = GuestMemoryAtomic::new(
             GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), MEM_SIZE)]).unwrap(),
