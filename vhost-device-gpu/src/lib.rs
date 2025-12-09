@@ -79,10 +79,13 @@ bitflags! {
 
 impl GpuCapset {
     #[cfg(feature = "backend-virgl")]
-    const ALL_VIRGLRENDERER_CAPSETS: GpuCapset = GpuCapset::from_bits(Self::VIRGL.bits() | Self::VIRGL2.bits() | Self::VENUS.bits()).unwrap();
+    const ALL_VIRGLRENDERER_CAPSETS: GpuCapset =
+        GpuCapset::from_bits(Self::VIRGL.bits() | Self::VIRGL2.bits() | Self::VENUS.bits())
+            .unwrap();
 
     #[cfg(feature = "backend-gfxstream")]
-    const ALL_GFXSTREAM_CAPSETS: GpuCapset = GpuCapset::from_bits(Self::GFXSTREAM_VULKAN.bits() | Self::GFXSTREAM_GLES.bits()).unwrap();
+    const ALL_GFXSTREAM_CAPSETS: GpuCapset =
+        GpuCapset::from_bits(Self::GFXSTREAM_VULKAN.bits() | Self::GFXSTREAM_GLES.bits()).unwrap();
 }
 
 impl Display for GpuCapset {
