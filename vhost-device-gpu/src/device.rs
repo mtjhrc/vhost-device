@@ -715,7 +715,7 @@ impl VhostUserBackend for VhostUserGpuBackend {
             | VhostUserProtocolFeatures::MQ
             | VhostUserProtocolFeatures::BACKEND_REQ
             | VhostUserProtocolFeatures::BACKEND_SEND_FD
-            | VhostUserProtocolFeatures::CONFIGURE_MEM_SLOTS
+            | VhostUserProtocolFeatures::SHMEM
     }
 
     fn set_event_idx(&self, enabled: bool) {
@@ -769,7 +769,7 @@ impl VhostUserBackend for VhostUserGpuBackend {
                 Ok(h) => h,
                 Err(poisoned) => poisoned.into_inner(),
             })
-                .upgrade() else {
+            .upgrade() else {
                 return Err(
                     Error::EpollHandler("Failed to upgrade epoll handler".to_string()).into(),
                 );
@@ -925,7 +925,7 @@ mod tests {
             Some(GpuCapset::VIRGL | GpuCapset::VIRGL2),
             GpuFlags::default(),
         )
-            .unwrap();
+        .unwrap();
         let backend = VhostUserGpuBackend::new(config).unwrap();
         let mem = GuestMemoryAtomic::new(
             GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), MEM_SIZE)]).unwrap(),

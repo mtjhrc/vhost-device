@@ -25,8 +25,8 @@ use vhost::vhost_user::{
 use vhost_user_backend::{VringRwLock, VringT};
 use virglrenderer::{
     FenceHandler, Iovec, ResourceCreateBlob, VirglRenderer, VirglRendererFlags, VirglResource,
-    VIRGL_HANDLE_TYPE_MEM_DMABUF, VIRGL_HANDLE_TYPE_MEM_OPAQUE_FD, VIRGL_MAP_ACCESS_MASK,
-    VIRGL_MAP_ACCESS_READ, VIRGL_MAP_ACCESS_RW, VIRGL_MAP_ACCESS_WRITE, VIRGL_MAP_CACHE_MASK,
+    MESA_MAP_ACCESS_MASK, MESA_MAP_ACCESS_READ, MESA_MAP_ACCESS_RW, MESA_MAP_ACCESS_WRITE,
+    MESA_MAP_CACHE_MASK, VIRGL_HANDLE_TYPE_MEM_DMABUF, VIRGL_HANDLE_TYPE_MEM_OPAQUE_FD,
 };
 use virtio_bindings::virtio_gpu::VIRTIO_GPU_BLOB_MEM_HOST3D;
 use vm_memory::{GuestAddress, GuestMemory, GuestMemoryMmap, VolatileSlice};
@@ -167,7 +167,7 @@ impl VirglRendererAdapter {
             .use_glx(config.flags().use_glx)
             .use_surfaceless(config.flags().use_surfaceless)
             .use_external_blob(true)
-            .use_async_fence_cb(false)
+            .use_async_fence_cb(true)
             .use_thread_sync(true);
         let fence_state = Arc::new(Mutex::new(FenceState::default()));
         let fence_handler = Box::new(VirglFenceHandler::new(
@@ -379,22 +379,18 @@ impl Renderer for VirglRendererAdapter {
     }
 
     fn context_attach_resource(&mut self, ctx_id: u32, resource_id: u32) -> VirtioGpuResult {
-        let resource = self
-            .resources
-            .get_mut(&resource_id)
-            .ok_or(ErrInvalidResourceId)?;
-        self.renderer
-            .context_attach_attach(ctx_id, &mut resource.virgl_resource);
+        if !self.resources.contains_key(&resource_id) {
+            return Err(ErrInvalidResourceId);
+        }
+        self.renderer.ctx_attach_resource(ctx_id, resource_id);
         Ok(OkNoData)
     }
 
     fn context_detach_resource(&mut self, ctx_id: u32, resource_id: u32) -> VirtioGpuResult {
-        let resource = self
-            .resources
-            .get(&resource_id)
-            .ok_or(ErrInvalidResourceId)?;
-        self.renderer
-            .context_detach_resoruce(ctx_id, &resource.virgl_resource);
+        if !self.resources.contains_key(&resource_id) {
+            return Err(ErrInvalidResourceId);
+        }
+        self.renderer.ctx_detach_resource(ctx_id, resource_id);
         Ok(OkNoData)
     }
 
@@ -685,16 +681,9 @@ impl Renderer for VirglRendererAdapter {
             .get_mut(&resource_id)
             .ok_or(ErrInvalidResourceId)?;
 
-        let map_info = resource
-            .virgl_resource
-            .map_info
-            .ok_or(ErrUnspec)?;
+        let map_info = resource.virgl_resource.map_info.ok_or(ErrUnspec)?;
 
-        let handle = resource
-            .virgl_resource
-            .handle
-            .as_ref()
-            .ok_or(ErrUnspec)?;
+        let handle = resource.virgl_resource.handle.as_ref().ok_or(ErrUnspec)?;
 
         // Check handle type - we don't support OPAQUE_FD mapping
         if handle.handle_type == VIRGL_HANDLE_TYPE_MEM_OPAQUE_FD {
@@ -703,14 +692,14 @@ impl Renderer for VirglRendererAdapter {
         }
 
         // Convert map_info access flags to VhostUserMMapFlags
-        let flags = match map_info & VIRGL_MAP_ACCESS_MASK {
-            VIRGL_MAP_ACCESS_READ => VhostUserMMapFlags::MAP_READ,
-            VIRGL_MAP_ACCESS_WRITE => VhostUserMMapFlags::MAP_READ_WRITE,
-            VIRGL_MAP_ACCESS_RW => VhostUserMMapFlags::MAP_READ_WRITE,
+        let flags = match map_info & MESA_MAP_ACCESS_MASK {
+            MESA_MAP_ACCESS_READ => VhostUserMMapFlags::default(),
+            MESA_MAP_ACCESS_WRITE => VhostUserMMapFlags::WRITABLE,
+            MESA_MAP_ACCESS_RW => VhostUserMMapFlags::WRITABLE,
             _ => {
-                error!("FIXME! Wrong access mask!");
-                VhostUserMMapFlags::MAP_READ_WRITE//return Err(ErrUnspec)
-            },
+                error!("Resource has bad map_info: {map_info}");
+                VhostUserMMapFlags::WRITABLE
+            }
         };
 
         common_map_blob(
@@ -726,7 +715,7 @@ impl Renderer for VirglRendererAdapter {
 
         // Return cache flags only (access flags not part of virtio-gpu spec)
         Ok(OkMapInfo {
-            map_info: map_info & VIRGL_MAP_CACHE_MASK,
+            map_info: map_info & MESA_MAP_CACHE_MASK,
         })
     }
 

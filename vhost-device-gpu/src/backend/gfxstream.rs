@@ -8,10 +8,13 @@ use std::{
     cell::RefCell,
     collections::BTreeMap,
     io::IoSliceMut,
-    os::{fd::FromRawFd, raw::c_void},
+    os::{
+        fd::{AsFd, FromRawFd},
+        raw::c_void,
+    },
     sync::{Arc, Mutex},
 };
-use std::os::fd::AsFd;
+
 use log::{debug, error, warn};
 use rutabaga_gfx::{
     ResourceCreate3D, ResourceCreateBlob, Rutabaga, RutabagaBuilder, RutabagaComponentType,
@@ -21,7 +24,9 @@ use rutabaga_gfx::{
     RUTABAGA_MAP_CACHE_MASK,
 };
 use vhost::vhost_user::{
-    gpu_message::{VhostUserGpuCursorPos, VhostUserGpuEdidRequest, VhostUserGpuScanout, VhostUserGpuUpdate},
+    gpu_message::{
+        VhostUserGpuCursorPos, VhostUserGpuEdidRequest, VhostUserGpuScanout, VhostUserGpuUpdate,
+    },
     message::VhostUserMMapFlags,
     Backend, GpuBackend,
 };
@@ -43,8 +48,8 @@ use crate::{
     protocol::{
         virtio_gpu_rect, GpuResponse,
         GpuResponse::{
-            ErrInvalidParameter, ErrInvalidResourceId, ErrUnspec, OkCapset, OkCapsetInfo, OkMapInfo,
-            OkNoData, OkResourcePlaneInfo,
+            ErrInvalidParameter, ErrInvalidResourceId, ErrUnspec, OkCapset, OkCapsetInfo,
+            OkMapInfo, OkNoData, OkResourcePlaneInfo,
         },
         GpuResponsePlaneInfo, VirtioGpuResult, VIRTIO_GPU_BLOB_FLAG_CREATE_GUEST_HANDLE,
         VIRTIO_GPU_FLAG_INFO_RING_IDX, VIRTIO_GPU_MAX_SCANOUTS,
@@ -698,7 +703,13 @@ impl Renderer for GfxstreamAdapter {
         };
 
         Self::with_rutabaga(|rutabaga| {
-            rutabaga.resource_create_blob(ctx_id, resource_id, resource_create_blob, rutabaga_iovecs, None)
+            rutabaga.resource_create_blob(
+                ctx_id,
+                resource_id,
+                resource_create_blob,
+                rutabaga_iovecs,
+                None,
+            )
         })?;
 
         let resource = GfxstreamResource {
@@ -740,10 +751,11 @@ impl Renderer for GfxstreamAdapter {
         }
 
         // Convert map_info access flags to VhostUserMMapFlags
+        // VhostUserMMapFlags::empty() = read-only, WRITABLE = read-write
         let flags = match map_info & RUTABAGA_MAP_ACCESS_MASK {
-            RUTABAGA_MAP_ACCESS_READ => VhostUserMMapFlags::MAP_READ,
-            RUTABAGA_MAP_ACCESS_WRITE => VhostUserMMapFlags::MAP_READ_WRITE,
-            RUTABAGA_MAP_ACCESS_RW => VhostUserMMapFlags::MAP_READ_WRITE,
+            RUTABAGA_MAP_ACCESS_READ => VhostUserMMapFlags::empty(),
+            RUTABAGA_MAP_ACCESS_WRITE => VhostUserMMapFlags::WRITABLE,
+            RUTABAGA_MAP_ACCESS_RW => VhostUserMMapFlags::WRITABLE,
             _ => return Err(ErrUnspec),
         };
 

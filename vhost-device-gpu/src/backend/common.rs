@@ -35,9 +35,7 @@ pub fn common_map_blob(
     offset: u64,
     resource_id: u32,
 ) -> Result<(), GpuResponse> {
-    trace!(
-        "Mapping blob resource_id={resource_id} offset={offset} size={blob_size}"
-    );
+    trace!("Mapping blob resource_id={resource_id} offset={offset} size={blob_size}");
 
     let map_request = VhostUserMMap {
         shmid: 0,
@@ -48,12 +46,10 @@ pub fn common_map_blob(
         flags: flags.bits(),
     };
 
-    backend
-        .shmem_map(&map_request, handle_fd)
-        .map_err(|e| {
-            error!("Failed to mmap by frontend: {e:?}");
-            ErrUnspec
-        })?;
+    backend.shmem_map(&map_request, handle_fd).map_err(|e| {
+        error!("Failed to mmap by frontend: {e:?}");
+        ErrUnspec
+    })?;
 
     Ok(())
 }
