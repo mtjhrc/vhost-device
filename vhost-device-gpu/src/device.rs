@@ -851,6 +851,8 @@ mod tests {
                 size: u64,
                 blob_mem: u32,
                 blob_flags: u32,
+                vecs: Vec<(vm_memory::GuestAddress, usize)>,
+                mem: &vm_memory::GuestMemoryMmap,
             ) -> VirtioGpuResult;
             fn resource_map_blob(&mut self, resource_id: u32, offset: u64) -> VirtioGpuResult;
             fn resource_unmap_blob(&mut self, resource_id: u32) -> VirtioGpuResult;
@@ -940,6 +942,11 @@ mod tests {
         let backend = GpuBackend::from_stream(backend);
 
         (frontend, backend)
+    }
+
+    fn dummy_backend_request_socket() -> Backend {
+        let (_frontend, backend) = UnixStream::pair().unwrap();
+        Backend::from_stream(backend)
     }
 
     #[test]
@@ -1424,8 +1431,8 @@ mod tests {
             assert_eq!(
                 backend.protocol_features(),
                 VhostUserProtocolFeatures::CONFIG | VhostUserProtocolFeatures::MQ |
-                VhostUserProtocolFeatures::BACKEND_REQ | VhostUserProtocolFeatures::REPLY_ACK |
-                VhostUserProtocolFeatures::BACKEND_SEND_FD
+                VhostUserProtocolFeatures::BACKEND_REQ | VhostUserProtocolFeatures::BACKEND_SEND_FD |
+                VhostUserProtocolFeatures::SHMEM
             );
             assert_eq!(backend.queues_per_thread(), vec![0xffff_ffff]);
             assert_eq!(backend.get_config(0, 0), Vec::<u8>::new());

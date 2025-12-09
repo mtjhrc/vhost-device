@@ -367,7 +367,8 @@ impl Renderer for VirglRendererAdapter {
         trace!("Creating context ctx_id={ctx_id}, '{context_name:?}', context_init={context_init}");
 
         // Create the context using virglrenderer (contexts are now managed internally)
-        VirglRenderer::create_context(ctx_id, context_init, context_name)
+        self.renderer
+            .create_context(ctx_id, context_init, context_name)
             .map_err(|_| ErrInvalidContextId)?;
 
         Ok(OkNoData)
@@ -779,6 +780,11 @@ mod virgl_cov_tests {
         GpuBackend::from_stream(backend)
     }
 
+    fn dummy_backend() -> Backend {
+        let (_, backend) = UnixStream::pair().unwrap();
+        Backend::from_stream(backend)
+    }
+
     #[test]
     fn sglist_to_iovecs_err_on_invalid_slice() {
         // Single region: 0x1000..0x2000 (4 KiB)
@@ -864,8 +870,9 @@ mod virgl_cov_tests {
             let (vring, _outs, _call_evt) =
                 create_vring(&mem, &[] as &[TestingDescChainArgs], GuestAddress(0x2000), GuestAddress(0x4000), 64);
 
-            let backend = dummy_gpu_backend();
-            let mut gpu = VirglRendererAdapter::new(&vring, &cfg, backend);
+            let backend = dummy_backend();
+            let gpu_backend = dummy_gpu_backend();
+            let mut gpu = VirglRendererAdapter::new(&vring, &cfg, backend, gpu_backend);
 
             gpu.event_poll();
             let edid_req = VhostUserGpuEdidRequest {
@@ -969,22 +976,23 @@ mod virgl_cov_tests {
             assert_matches!(gpu.flush_resource(0, dirty), Ok(GpuResponse::OkNoData));
 
             // Test capset queries
-            for index in [0, 1, 3] {
+            for index in [0, 1, 2] {
                 test_capset_operations(&gpu, index);
             }
 
-            // Test blob resource functions (all should return ErrUnspec - not implemented)
+            // Test blob resource functions
             assert_matches!(
-                gpu.resource_create_blob(1, 100, 0, 4096, 0, 0),
+                gpu.resource_create_blob(1, 100, 0, 4096, 0, 0, vec![], &gm_back),
                 Err(GpuResponse::ErrUnspec)
             );
+            // resource 100 doesn't exist, so these return ErrInvalidResourceId
             assert_matches!(
                 gpu.resource_map_blob(100, 0),
-                Err(GpuResponse::ErrUnspec)
+                Err(GpuResponse::ErrInvalidResourceId)
             );
             assert_matches!(
                 gpu.resource_unmap_blob(100),
-                Err(GpuResponse::ErrUnspec)
+                Err(GpuResponse::ErrInvalidResourceId)
             );
 
             // Test resource_assign_uuid (not implemented)

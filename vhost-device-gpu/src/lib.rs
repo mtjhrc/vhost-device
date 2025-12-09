@@ -338,7 +338,7 @@ mod tests {
     #[test]
     fn test_default_num_capsets() {
         #[cfg(feature = "backend-virgl")]
-        assert_eq!(GpuConfig::DEFAULT_VIRGLRENDER_CAPSET_MASK.num_capsets(), 2);
+        assert_eq!(GpuConfig::DEFAULT_VIRGLRENDER_CAPSET_MASK.num_capsets(), 3);
         #[cfg(feature = "backend-gfxstream")]
         assert_eq!(GpuConfig::DEFAULT_GFXSTREAM_CAPSET_MASK.num_capsets(), 2);
     }

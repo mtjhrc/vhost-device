@@ -434,9 +434,10 @@ mod tests {
     #[test]
     fn test_null_adapter_blob_operations() {
         let mut adapter = create_null_adapter();
+        let mem = GuestMemoryMmap::<()>::from_ranges(&[(GuestAddress(0), 0x1000)]).unwrap();
 
         // Verify blob resource creation succeeds
-        let result = adapter.resource_create_blob(0, 1, 1, 4096, 0, 0);
+        let result = adapter.resource_create_blob(0, 1, 1, 4096, 0, 0, vec![], &mem);
         assert!(matches!(result, Ok(GpuResponse::OkNoData)));
 
         // Verify mapping blob resource succeeds

@@ -855,6 +855,11 @@ mod gfx_fence_tests {
         GpuBackend::from_stream(backend)
     }
 
+    fn dummy_backend() -> Backend {
+        let (_, backend) = UnixStream::pair().unwrap();
+        Backend::from_stream(backend)
+    }
+
     /// Attempts to create a GPU adapter for testing.
     /// Returns None if gfxstream initialization fails (e.g., in CI without GPU
     /// drivers).
@@ -899,6 +904,7 @@ mod gfx_fence_tests {
         });
 
         Some(GfxstreamAdapter {
+            backend: dummy_backend(),
             gpu_backend: dummy_gpu_backend(),
             resources: BTreeMap::default(),
             fence_state,
