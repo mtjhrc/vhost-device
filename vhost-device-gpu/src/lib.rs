@@ -69,16 +69,20 @@ bitflags! {
         const VIRGL2 = 1 << RUTABAGA_CAPSET_VIRGL2 as u64;
         #[cfg(feature = "backend-virgl")]
         const VENUS = 1 << RUTABAGA_CAPSET_VENUS as u64;
-        #[cfg(feature = "backend-virgl")]
-        const ALL_VIRGLRENDERER_CAPSETS = Self::VIRGL.bits() | Self::VIRGL2.bits() | Self::VENUS.bits();
 
         #[cfg(feature = "backend-gfxstream")]
         const GFXSTREAM_VULKAN = 1 << RUTABAGA_CAPSET_GFXSTREAM_VULKAN as u64;
         #[cfg(feature = "backend-gfxstream")]
         const GFXSTREAM_GLES = 1 << RUTABAGA_CAPSET_GFXSTREAM_GLES as u64;
-        #[cfg(feature = "backend-gfxstream")]
-        const ALL_GFXSTREAM_CAPSETS = Self::GFXSTREAM_VULKAN.bits() | Self::GFXSTREAM_GLES.bits();
     }
+}
+
+impl GpuCapset {
+    #[cfg(feature = "backend-virgl")]
+    const ALL_VIRGLRENDERER_CAPSETS: GpuCapset = GpuCapset::from_bits(Self::VIRGL.bits() | Self::VIRGL2.bits() | Self::VENUS.bits()).unwrap();
+
+    #[cfg(feature = "backend-gfxstream")]
+    const ALL_GFXSTREAM_CAPSETS: GpuCapset = GpuCapset::from_bits(Self::GFXSTREAM_VULKAN.bits() | Self::GFXSTREAM_GLES.bits()).unwrap();
 }
 
 impl Display for GpuCapset {
