@@ -50,12 +50,8 @@ use crate::{
         VirtioGpuResult, VIRTIO_GPU_MAX_SCANOUTS,
     },
     renderer::Renderer,
-    GpuConfig,
+    GpuCapset, GpuConfig,
 };
-
-const CAPSET_ID_VIRGL: u32 = 1;
-const CAPSET_ID_VIRGL2: u32 = 2;
-const CAPSET_ID_VENUS: u32 = 4;
 
 #[derive(Clone)]
 pub struct GpuResource {
@@ -142,6 +138,7 @@ impl FenceHandler for VirglFenceHandler {
 
 pub struct VirglRendererAdapter {
     renderer: VirglRenderer,
+    capsets: GpuCapset,
     backend: Backend,
     gpu_backend: GpuBackend,
     fence_state: Arc<Mutex<FenceState>>,
@@ -156,7 +153,8 @@ impl VirglRendererAdapter {
         backend: Backend,
         gpu_backend: GpuBackend,
     ) -> Self {
-        let venus_enabled = config.capsets().contains(crate::GpuCapset::VENUS);
+        let capsets = config.capsets();
+        let venus_enabled = capsets.contains(GpuCapset::VENUS);
 
         let virglrenderer_flags = VirglRendererFlags::new()
             .use_virgl(true)
@@ -178,6 +176,7 @@ impl VirglRendererAdapter {
         let renderer = VirglRenderer::init(virglrenderer_flags, fence_handler, None)
             .expect("Failed to initialize virglrenderer");
         Self {
+            capsets,
             renderer,
             backend,
             gpu_backend,
@@ -338,19 +337,20 @@ impl Renderer for VirglRendererAdapter {
     }
 
     fn get_capset_info(&self, index: u32) -> VirtioGpuResult {
-        debug!("the capset index is {index}");
-        let capset_id = match index {
-            0 => CAPSET_ID_VIRGL,
-            1 => CAPSET_ID_VIRGL2,
-            2 => CAPSET_ID_VENUS,
-            _ => return Err(ErrInvalidParameter),
-        };
+        debug!("Looking up capset at index {index}");
+        let capset_id = self
+            .capsets
+            .iter()
+            .nth(index as usize)
+            .ok_or(ErrInvalidParameter)?
+            .bits() as u32;
+
         let (version, size) = self.renderer.get_capset_info(index);
-        Ok(dbg!(OkCapsetInfo {
+        Ok(OkCapsetInfo {
             capset_id,
             version,
             size,
-        }))
+        })
     }
 
     fn get_capset(&self, capset_id: u32, version: u32) -> VirtioGpuResult {
