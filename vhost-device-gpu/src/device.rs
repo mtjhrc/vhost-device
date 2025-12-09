@@ -359,7 +359,8 @@ impl VhostUserGpuBackendInner {
         hdr: virtio_gpu_ctrl_hdr,
         req: virtio_gpu_ctx_create,
     ) -> VirtioGpuResult {
-        let context_name: Option<String> = Some(req.get_debug_name());
+        //FIXME
+        let context_name: Option<String> = Some("foo".into()); //Some(req.get_debug_name());
         renderer.create_context(
             dbg!(hdr.ctx_id.into()),
             req.context_init.into(),
