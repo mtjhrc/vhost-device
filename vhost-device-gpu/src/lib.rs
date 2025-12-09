@@ -30,7 +30,7 @@ use log::info;
 #[cfg(feature = "backend-gfxstream")]
 use rutabaga_gfx::{RUTABAGA_CAPSET_GFXSTREAM_GLES, RUTABAGA_CAPSET_GFXSTREAM_VULKAN};
 #[cfg(feature = "backend-virgl")]
-use rutabaga_gfx::{RUTABAGA_CAPSET_VIRGL, RUTABAGA_CAPSET_VIRGL2};
+use rutabaga_gfx::{RUTABAGA_CAPSET_VENUS, RUTABAGA_CAPSET_VIRGL, RUTABAGA_CAPSET_VIRGL2};
 use thiserror::Error as ThisError;
 use vhost_user_backend::VhostUserDaemon;
 use vm_memory::{GuestMemoryAtomic, GuestMemoryMmap};
@@ -67,6 +67,8 @@ bitflags! {
         const VIRGL = 1 << RUTABAGA_CAPSET_VIRGL as u64;
         #[cfg(feature = "backend-virgl")]
         const VIRGL2 = 1 << RUTABAGA_CAPSET_VIRGL2 as u64;
+        #[cfg(feature = "backend-virgl")]
+        const VENUS = 1 << RUTABAGA_CAPSET_VENUS as u64;
 
         #[cfg(feature = "backend-gfxstream")]
         const GFXSTREAM_VULKAN = 1 << RUTABAGA_CAPSET_GFXSTREAM_VULKAN as u64;
@@ -78,7 +80,8 @@ bitflags! {
 impl GpuCapset {
     #[cfg(feature = "backend-virgl")]
     const ALL_VIRGLRENDERER_CAPSETS: GpuCapset =
-        GpuCapset::from_bits(Self::VIRGL.bits() | Self::VIRGL2.bits()).unwrap();
+        GpuCapset::from_bits(Self::VIRGL.bits() | Self::VIRGL2.bits() | Self::VENUS.bits())
+            .unwrap();
 
     #[cfg(feature = "backend-gfxstream")]
     const ALL_GFXSTREAM_CAPSETS: GpuCapset =
@@ -104,6 +107,8 @@ impl Display for GpuCapset {
                 Self::VIRGL => write!(f, "virgl")?,
                 #[cfg(feature = "backend-virgl")]
                 Self::VIRGL2 => write!(f, "virgl2")?,
+                #[cfg(feature = "backend-virgl")]
+                Self::VENUS => write!(f, "venus")?,
                 #[cfg(feature = "backend-gfxstream")]
                 Self::GFXSTREAM_VULKAN => write!(f, "gfxstream-vulkan")?,
                 #[cfg(feature = "backend-gfxstream")]
@@ -340,7 +345,7 @@ mod tests {
     #[test]
     fn test_default_num_capsets() {
         #[cfg(feature = "backend-virgl")]
-        assert_eq!(GpuConfig::DEFAULT_VIRGLRENDER_CAPSET_MASK.num_capsets(), 2);
+        assert_eq!(GpuConfig::DEFAULT_VIRGLRENDER_CAPSET_MASK.num_capsets(), 3);
         #[cfg(feature = "backend-gfxstream")]
         assert_eq!(GpuConfig::DEFAULT_GFXSTREAM_CAPSET_MASK.num_capsets(), 2);
     }
